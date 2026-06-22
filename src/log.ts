@@ -188,8 +188,8 @@ function writePrivateFile(path: string, data: string): void {
 
 function requestMeta(wire: Wire, j: any): Record<string, unknown> {
   const base: Record<string, unknown> = {
-    model: j?.model,
-    stream: j?.stream,
+    modelSet: isPresent(j?.model),
+    stream: safeBooleanish(j?.stream),
     toolCount: Array.isArray(j?.tools) ? j.tools.length : undefined,
   };
   if (wire === "anthropic") {
@@ -223,7 +223,7 @@ function requestMeta(wire: Wire, j: any): Record<string, unknown> {
         : undefined,
     };
   }
-  return { keys: Object.keys(j ?? {}).sort() };
+  return { keyCount: topLevelKeyCount(j) };
 }
 
 function responseMeta(wire: Wire, j: any): Record<string, unknown> {
@@ -245,7 +245,20 @@ function responseMeta(wire: Wire, j: any): Record<string, unknown> {
         : undefined,
     };
   }
-  return { keys: Object.keys(j ?? {}).sort() };
+  return { keyCount: topLevelKeyCount(j) };
+}
+
+function isPresent(value: unknown): boolean | undefined {
+  return value === undefined ? undefined : true;
+}
+
+function safeBooleanish(value: unknown): boolean | "set" | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "boolean" ? value : "set";
+}
+
+function topLevelKeyCount(value: unknown): number {
+  return value && typeof value === "object" ? Object.keys(value).length : 0;
 }
 
 function countAnthropicToolResults(j: any): number {
@@ -308,22 +321,22 @@ function summarizeRequest(wire: Wire, j: any): void {
       summarizeAnthropicReq(j);
       return;
     default:
-      console.log("   [unknown] keys: " + Object.keys(j ?? {}).join(", "));
+      console.log(`   [unknown] keys=${topLevelKeyCount(j)}`);
   }
 }
 
 function summarizeAnthropicReq(j: any): void {
   const bits: string[] = ["[anthropic]"];
-  if (j.model) bits.push(`model=${j.model}`);
-  if (j.stream !== undefined) bits.push(`stream=${j.stream}`);
-  if (Array.isArray(j.messages)) bits.push(`messages=${j.messages.length}`);
-  if (j.system) bits.push("system=yes");
-  if (Array.isArray(j.tools)) bits.push(`tools=${j.tools.length}`);
+  if (j?.model !== undefined) bits.push("model=yes");
+  if (j?.stream !== undefined) bits.push(typeof j.stream === "boolean" ? `stream=${j.stream}` : "stream=yes");
+  if (Array.isArray(j?.messages)) bits.push(`messages=${j.messages.length}`);
+  if (j?.system) bits.push("system=yes");
+  if (Array.isArray(j?.tools)) bits.push(`tools=${j.tools.length}`);
   console.log("   " + bits.join("  "));
 
   if (!cfg.logBodies) return;
 
-  if (Array.isArray(j.messages)) {
+  if (Array.isArray(j?.messages)) {
     for (const m of j.messages) {
       if (!Array.isArray(m.content)) continue;
       for (const block of m.content) {
@@ -338,15 +351,15 @@ function summarizeAnthropicReq(j: any): void {
 
 function summarizeOpenAIChatReq(j: any): void {
   const bits: string[] = ["[openai-chat]"];
-  if (j.model) bits.push(`model=${j.model}`);
-  if (j.stream !== undefined) bits.push(`stream=${j.stream}`);
-  if (Array.isArray(j.messages)) bits.push(`messages=${j.messages.length}`);
-  if (Array.isArray(j.tools)) bits.push(`tools=${j.tools.length}`);
+  if (j?.model !== undefined) bits.push("model=yes");
+  if (j?.stream !== undefined) bits.push(typeof j.stream === "boolean" ? `stream=${j.stream}` : "stream=yes");
+  if (Array.isArray(j?.messages)) bits.push(`messages=${j.messages.length}`);
+  if (Array.isArray(j?.tools)) bits.push(`tools=${j.tools.length}`);
   console.log("   " + bits.join("  "));
 
   if (!cfg.logBodies) return;
 
-  if (Array.isArray(j.messages)) {
+  if (Array.isArray(j?.messages)) {
     for (const m of j.messages) {
       if (m.role === "tool") {
         const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
@@ -363,19 +376,19 @@ function summarizeOpenAIChatReq(j: any): void {
 
 function summarizeOpenAIResponsesReq(j: any): void {
   const bits: string[] = ["[openai-responses]"];
-  if (j.model) bits.push(`model=${j.model}`);
-  if (j.stream !== undefined) bits.push(`stream=${j.stream}`);
-  if (j.instructions) bits.push("instructions=yes");
-  if (Array.isArray(j.tools)) bits.push(`tools=${j.tools.length}`);
-  if (typeof j.input === "string") bits.push("input=string");
-  else if (Array.isArray(j.input)) bits.push(`input=${j.input.length}`);
+  if (j?.model !== undefined) bits.push("model=yes");
+  if (j?.stream !== undefined) bits.push(typeof j.stream === "boolean" ? `stream=${j.stream}` : "stream=yes");
+  if (j?.instructions) bits.push("instructions=yes");
+  if (Array.isArray(j?.tools)) bits.push(`tools=${j.tools.length}`);
+  if (typeof j?.input === "string") bits.push("input=string");
+  else if (Array.isArray(j?.input)) bits.push(`input=${j.input.length}`);
   console.log("   " + bits.join("  "));
 
   if (!cfg.logBodies) return;
 
-  if (typeof j.input === "string") {
+  if (typeof j?.input === "string") {
     console.log(`   input: ${preview(j.input, 220)}`);
-  } else if (Array.isArray(j.input)) {
+  } else if (Array.isArray(j?.input)) {
     for (const it of j.input) {
       if (it?.type === "function_call_output") {
         console.log(`   ⤷ function_call_output: ${preview(it.output, 220)}`);

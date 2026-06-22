@@ -202,7 +202,7 @@ function dopplerDiscovery(stats: DopplerStats): PluginDiscovery {
       label: "Doppler CLI",
       status: "disabled",
       valueCount: 0,
-      message: "disabled by FICTA_REGISTRY_DOPPLER_ENABLED=0",
+      message: "disabled by config/env (registry.doppler.enabled=false or FICTA_REGISTRY_DOPPLER_ENABLED=0)",
     };
   }
 
@@ -268,7 +268,7 @@ function dopplerDiscovery(stats: DopplerStats): PluginDiscovery {
       label: "Doppler CLI",
       status: "error",
       valueCount: 0,
-      message: "could not list Doppler configs for FICTA_REGISTRY_DOPPLER_CONFIGS=all",
+      message: 'could not list Doppler configs for registry.doppler.configs="all"',
     };
   }
 
@@ -302,7 +302,7 @@ function dopplerDiscovery(stats: DopplerStats): PluginDiscovery {
     label: "Doppler CLI",
     status: "not_found",
     valueCount: 0,
-    message: `no Doppler secrets loaded${timeout}; configure Doppler or set FICTA_REGISTRY_DOPPLER_ENABLED=0 to skip`,
+    message: `no Doppler secrets loaded${timeout}; configure Doppler or disable with registry.doppler.enabled=false`,
     details,
   };
 }

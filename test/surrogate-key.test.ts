@@ -10,7 +10,7 @@ describe("ensureSurrogateKey", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "ficta-key-"));
-    path = join(dir, "config.env");
+    path = join(dir, "config.toml");
     delete process.env.FICTA_SURROGATE_KEY;
   });
   afterEach(() => {

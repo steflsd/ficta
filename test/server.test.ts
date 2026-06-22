@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -22,6 +22,82 @@ function close(server: ReturnType<typeof createServer>): Promise<void> {
 }
 
 describe("proxy hardening", () => {
+  it("does not write protected literals into safe metadata logs", async () => {
+    const originalEnv = {
+      FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
+      FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
+      FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
+      FICTA_REGISTRY_PROCESS_ENV_ENABLED: process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED,
+      FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
+      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
+      FICTA_SILENT: process.env.FICTA_SILENT,
+    };
+
+    const upstream = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(body);
+      });
+    });
+
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      const upstreamPort = await listen(upstream);
+      const logDir = mkdtempSync(join(tmpdir(), "ficta-safe-meta-"));
+      process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
+      process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
+      process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
+      process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "0";
+      process.env.FICTA_REGISTRY_MIN_LEN = "6";
+      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_DIR = logDir;
+      process.env.FICTA_SILENT = "1";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({ port: 0 });
+
+      const unknownRes = await fetch(`http://127.0.0.1:${proxy.port}/new-provider/unknown`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ [AWS]: "secret in a key", message: "safe" }),
+      });
+      expect(unknownRes.status).toBe(200);
+      await unknownRes.text();
+
+      const knownRes = await fetch(`http://127.0.0.1:${proxy.port}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: AWS, messages: [] }),
+      });
+      expect(knownRes.status).toBe(200);
+      await knownRes.text();
+
+      const run = readdirSync(logDir).find((name) => name.startsWith("run-"));
+      expect(run).toBeTruthy();
+      const meta = readdirSync(join(logDir, run ?? ""))
+        .filter((name) => name.endsWith(".meta.json"))
+        .map((name) => readFileSync(join(logDir, run ?? "", name), "utf8"))
+        .join("\n");
+
+      expect(meta).not.toContain(AWS);
+      expect(meta).toContain('"keyCount"');
+      expect(meta).toContain('"modelSet"');
+    } finally {
+      proxy?.close();
+      await close(upstream);
+      for (const [k, v] of Object.entries(originalEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it("preloads Doppler CLI values and redacts them when an agent later emits Doppler output", async () => {
     const canary = "ficta-canary-from-doppler-fixture-12345";
     const originalEnv = {

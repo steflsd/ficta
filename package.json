@@ -1,7 +1,7 @@
 {
-  "name": "ficta",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@steflsd/ficta",
+  "version": "0.1.0-beta.0",
+  "private": false,
   "type": "module",
   "description": "Keep your registered secrets out of the LLM — local redaction proxy for coding agents",
   "license": "MIT",
@@ -27,11 +27,27 @@
   "bin": {
     "ficta": "bin/ficta.mjs"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SECURITY.md",
+    "config.toml.example",
+    ".env.example"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "ficta": "tsx src/cli.ts",
     "build": "tsc",
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm check && pnpm typecheck && pnpm test",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "check": "biome check .",

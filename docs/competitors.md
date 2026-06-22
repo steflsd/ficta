@@ -80,6 +80,19 @@ hook systems in real time; 500+ validated secret types.
   ✗ Cloud API; block/flag model.
 - **Cloudflare AI Gateway / Kong AI Gateway / Portkey** — LLM gateways with DLP/PII redaction
   as a feature. ✗ Infra/cloud, team-deployed, redact/block (not reversible), not dev-local.
+- **NVIDIA NeMo Guardrails** — Apache-2.0 **programmable-guardrails framework** for building safe
+  LLM apps (chatbots / RAG / assistants). You author **input/dialog/retrieval/execution/output
+  rails** in the **Colang** DSL + YAML; it runs as a library between your app and the LLM (or an
+  opt-in HTTP server). Strengths: **jailbreak/prompt-injection defense, topical/dialog control,
+  content moderation, fact-check/hallucination rails**; PII masking is a sub-feature (Presidio-style).
+  ✗ **Different direction & audience** — input-side safety for *app builders*, not egress secret
+  hygiene for coding-agent users. ✗ **One-way masking**, not reversible restore. ✗ **Not
+  secrets-first** — PII/content-safety oriented; no secret-manager exact-match. ✗ **Config-heavy**
+  (a whole DSL) — the opposite of a one-command agent wrap. ~ Detection is local *or* third-party
+  cloud (ActiveFence/AlignScore) depending on rails; anonymous telemetry to NVIDIA (no content,
+  opt-out). **ficta diff:** ficta is the egress half NeMo doesn't target — reversible secret
+  redaction on the native wire for `claude`/`codex`/`pi`, zero-config; NeMo's prompt-injection
+  strength is exactly ficta's declared non-goal (see *Honest weaknesses*).
 
 ### E. Direct OSS lookalikes — *the closest analogs, teardown'd*
 
@@ -113,6 +126,30 @@ commercial cloud tier (SAML/RBAC/SIEM). Maturity: early — **~22 stars, ~24 com
   provider auto-discovery, OpenAI-SDK compatibility. **22 stars also says no one has won
   individual-dev adoption yet** — the category is unproven at the individual tier.
 
+### F. AI-safe config / secret managers — *different boundary, same positioning*
+
+**varlock** (varlock.dev, DMNO team) — an **env/secrets *manager*** (drop-in dotenv
+replacement), not a redaction proxy. AI-safety is *architectural*: a typed, declarative
+`.env.schema` (decorators `@sensitive`/`@required`/`@type`, provider plugins) is the single
+source of truth agents can read for **structure**, while `@sensitive` *values* stay out of view;
+encrypted `.env.local` keeps "nothing in plaintext." Adds `varlock scan` + pre-commit hooks,
+runtime redaction of sensitive values from logs, type-gen, and 6 secret-provider plugins
+(1Password, Infisical, AWS/Azure/GCP, Bitwarden).
+
+- ✗ **Different boundary.** Prevents the agent from *reading* the secret locally; it **never
+  sends to a model**, so it can't help once a secret legitimately enters context — file contents,
+  command output, or a value flowing through the running process. ficta covers exactly that wire.
+- ✗ **Silent on subscription/OAuth auth** (Claude Pro, ChatGPT-Codex) — ficta's headline case.
+- ✗ **Not reversible / not a proxy** — there's no model round-trip to restore, by design.
+- ~ **Complementary, not only rival.** varlock is a secret *source* like Doppler; a
+  varlock registry-source plugin (read `.env.schema` `@sensitive` keys / `varlock load`) could
+  feed ficta's exact-match registry — the same shape as the existing Doppler source.
+- **Validates the category.** A funded team marketing "AI-safe secrets" confirms the demand;
+  its scope (keep secrets out of *files*) leaves ficta's wire/subscription-auth gap wide open —
+  same "validates the wedge" read as DontFeedTheAI.
+- **ficta diff:** redacts secrets *in flight to the provider* (incl. subscription auth),
+  reversible streaming/tool-call round-trip, and can *consume* a varlock schema as a source.
+
 ---
 
 ## Differentiation matrix
@@ -137,6 +174,10 @@ Honest read: the top five rows no longer separate us — **DontFeedTheAI matches
 reversible-secrets.** Real separation is the bottom four (secret-manager match + agentic
 streaming/tool-call round-trip + the wrap). Treat those as reliability-sensitive until they have
 more field mileage.
+
+*varlock (Category F) is intentionally omitted — the matrix compares reversible-redaction
+proxies; varlock is a config/secret manager that prevents the agent from seeing values rather than
+redacting them in flight, so it shares no row mechanism.*
 
 ---
 
@@ -177,8 +218,8 @@ Preferred framing: **a beta OSS secret-hygiene tool for individual coding-agent 
 - **Detection breadth/accuracy:** ggshield (500+ validated), TruffleHog (800+ verified),
   Private AI (50+ entities / 50+ languages) all beat a vendored Gitleaks ruleset. We're
   strong on registered **secrets**; PII-like detector support is best-effort and should stay secondary.
-- **No prompt-injection / jailbreak defense** (Lakera/Kong do). Deliberately out of scope —
-  that's input-direction safety, not egress.
+- **No prompt-injection / jailbreak defense** (frameworks like NVIDIA **NeMo Guardrails**, plus
+  Lakera/Kong, do). Deliberately out of scope — that's input-direction safety, not egress.
 - **No enterprise control plane** (policy management, dashboards, SSO, audit export). Do not pitch
   one until it exists; it is outside the current publishing lane.
 - **The trust ask is large:** ficta must sit in the path of all model traffic. Only
@@ -203,4 +244,9 @@ Preferred framing: **a beta OSS secret-hygiene tool for individual coding-agent 
 - Microsoft PII Shield — techcommunity.microsoft.com (privacy proxy: /anonymize + /deanonymize)
 - DontFeedTheAI — github.com/zeroc00I/LLM-anonymization (local reversible proxy; excludes streaming/tool-use/file-editing)
 - aisecuritygateway — github.com/aisecuritygateway/aisecuritygateway
+- varlock — varlock.dev (DMNO team) · AI-safe .env: `.env.schema` + encrypted `.env.local`;
+  prevents agents from reading `@sensitive` values (config-manager boundary, not a redaction proxy)
+- NVIDIA NeMo Guardrails — github.com/NVIDIA-NeMo/Guardrails (Apache-2.0; programmable input/output
+  rails in Colang; jailbreak/PII/topic/moderation rails; library or opt-in server, not a transparent
+  secrets proxy)
 - Demand signal — Claude Code feature request #29434 (redact secrets/PII from context window; closed as not planned)

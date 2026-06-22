@@ -6,16 +6,18 @@ the current project/env, kept in memory for that session, then forgotten when th
 To avoid relying on muscle memory (`ficta claude` every time), install shell shims once:
 
 ```sh
-pnpm install
-pnpm ficta setup   # configure ~/.ficta/config.env and optionally install shims
+npm install -g @steflsd/ficta@beta
+ficta setup   # configure ~/.ficta/config.toml and optionally install shims
 # or just install shims directly:
-pnpm ficta install
+ficta install
 ```
+
+From a source checkout, use `pnpm ficta setup` / `pnpm ficta install` instead.
 
 Before launching an agent, sanity-check registry loading and routing:
 
 ```sh
-pnpm ficta doctor claude   # or codex / pi
+ficta doctor claude   # or codex / pi
 ```
 
 Then restart your shell and use your normal commands:
@@ -29,13 +31,13 @@ pi
 The installed files are generated from agent-integration plugins:
 
 ```txt
-~/.ficta/bin/ficta   -> central launcher for this ficta checkout, using /usr/bin/env node
+~/.ficta/bin/ficta   -> central launcher for the installed ficta CLI, using /usr/bin/env node
 ~/.ficta/bin/claude  -> calls the sibling ficta launcher as: ficta claude "$@"
 ~/.ficta/bin/codex   -> calls the sibling ficta launcher as: ficta codex "$@"
 ~/.ficta/bin/pi      -> calls the sibling ficta launcher as: ficta pi "$@"
 ```
 
-Only the central launcher contains the source-checkout path, so moving a development checkout only
+Only the central launcher contains the installed CLI path, so moving a development checkout only
 requires rerunning `pnpm ficta install --force` to refresh one generated file.
 
 `ficta install` also adds `~/.ficta/bin` to your shell startup file (`~/.zshrc`, `~/.bashrc`, or
@@ -45,7 +47,7 @@ requires rerunning `pnpm ficta install --force` to refresh one generated file.
 
 Shims preserve the important privacy properties:
 
-- the registry is discovered from the current working directory (`.env`, `.env.local`) and configured sources in `~/.ficta/config.env`
+- the registry is discovered from the current working directory (`.env`, `.env.local`) and configured sources in `~/.ficta/config.toml`
 - Doppler CLI secrets are loaded before the agent starts; `doppler run -- claude` / `doppler run -- pi` can also be covered by enabling process-env loading
 - secrets live only for the agent session
 - multiple projects do not share one long-lived vault
@@ -72,17 +74,26 @@ If no protected values load, ficta warns and launches the agent in passthrough m
 ⚠ no protected values loaded — launching anyway in passthrough mode
 ```
 
-To get protection in that project, add/point at registry sources:
+To get protection in that project, add/point at registry sources with `ficta setup` or by editing
+`~/.ficta/config.toml`:
 
-```sh
-ficta setup
-FICTA_REGISTRY_ENV_FILE_PATHS=.env:.env.production claude
-FICTA_REGISTRY_PROCESS_ENV_ENABLED=1 pi                 # default: load secret-ish process env
-FICTA_REGISTRY_DOPPLER_ENABLED=1 claude                 # enable Doppler CLI startup loading
-FICTA_REGISTRY_DOPPLER_CONFIGS=dev,prod pi              # protect multiple Doppler configs
+```toml
+[registry.env_file]
+enabled = true
+paths = [".env", ".env.production"]
+
+[registry.process_env]
+enabled = true
+mode = "secret-ish"
+
+[registry.doppler]
+enabled = true
+configs = ["dev", "prod"]
 ```
 
-If you want strict startup blocking instead:
+Shell `FICTA_*` environment variables can still override these settings for one run.
+
+If you want strict startup blocking instead, set `registry.require = true` in config, or override once:
 
 ```sh
 FICTA_REQUIRE_REGISTRY=1 claude
@@ -110,16 +121,16 @@ The shim resolves the real agent executable outside `~/.ficta/bin` to avoid recu
 
 ## Uninstall
 
-From this source checkout:
-
-```sh
-pnpm ficta uninstall
-```
-
-If you have globally linked/published the `ficta` binary, this also works:
+If you installed the published package:
 
 ```sh
 ficta uninstall
+```
+
+From a source checkout:
+
+```sh
+pnpm ficta uninstall
 ```
 
 This removes ficta-owned shims and the managed PATH block. It will not delete/overwrite non-ficta
@@ -128,7 +139,9 @@ files that happen to exist in `~/.ficta/bin`.
 ## Options
 
 ```sh
-pnpm ficta install --no-shell   # write shims but do not edit shell rc
-pnpm ficta install --force      # overwrite existing files in ~/.ficta/bin
-pnpm ficta uninstall --no-shell # remove shims but leave shell rc unchanged
+ficta install --no-shell   # write shims but do not edit shell rc
+ficta install --force      # overwrite existing files in ~/.ficta/bin
+ficta uninstall --no-shell # remove shims but leave shell rc unchanged
 ```
+
+From a source checkout, prefix these with `pnpm` as `pnpm ficta ...`.

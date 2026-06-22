@@ -27,14 +27,3 @@ export function applyRuntimeEnvDefaults(env: NodeJS.ProcessEnv = process.env): v
   for (const [key, value] of Object.entries(FICTA_DEFAULTS)) env[key] ??= value;
   env.FICTA_LOG_DIR ??= defaultLogDir();
 }
-
-export function compactUserConfig(values: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  const defaults: Record<string, string> = { ...FICTA_DEFAULTS, FICTA_LOG_DIR: defaultLogDir() };
-  for (const [key, value] of Object.entries(values)) {
-    if (value === "") continue;
-    if (defaults[key] === value) continue;
-    out[key] = value;
-  }
-  return out;
-}

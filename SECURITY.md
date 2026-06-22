@@ -9,6 +9,10 @@ claim.
 
 This project is pre-1.0. Until a stable release exists, only the current main branch / latest published package, if any, should be considered supported.
 
+## Independent review
+
+We recommend cloning this repository and asking your own coding or security agent to audit the code before use. In particular, ask it to verify whether the app contains any exfiltration paths or malicious behavior. Use fake fixture secrets during review; do not provide real API keys, tokens, `.env` files, or provider transcripts to the agent.
+
 ## Reporting a vulnerability
 
 If you find a vulnerability or a case where ficta forwards a registered value verbatim in a covered request surface, please report it privately rather than opening a public issue with secret material.

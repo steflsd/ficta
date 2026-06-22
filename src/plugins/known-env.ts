@@ -139,7 +139,7 @@ function envFileDiscovery(stats: KnownEnvStats): PluginDiscovery {
       label: "env files",
       status: "disabled",
       valueCount: 0,
-      message: "disabled by FICTA_REGISTRY_ENV_FILE_ENABLED=0",
+      message: "disabled by config/env (registry.env_file.enabled=false or FICTA_REGISTRY_ENV_FILE_ENABLED=0)",
     };
   }
 
@@ -197,7 +197,7 @@ function processEnvDiscovery(stats: KnownEnvStats): PluginDiscovery {
       label: "process env",
       status: "available",
       valueCount: 0,
-      message: `${stats.processEnvSecretishCandidates} secret-ish env var name(s) detected; enable with FICTA_REGISTRY_PROCESS_ENV_ENABLED=1`,
+      message: `${stats.processEnvSecretishCandidates} secret-ish env var name(s) detected; enable with registry.process_env.enabled=true or FICTA_REGISTRY_PROCESS_ENV_ENABLED=1`,
     };
   }
 
@@ -207,7 +207,7 @@ function processEnvDiscovery(stats: KnownEnvStats): PluginDiscovery {
     label: "process env",
     status: "disabled",
     valueCount: 0,
-    message: "disabled by FICTA_REGISTRY_PROCESS_ENV_ENABLED=0",
+    message: "disabled by config/env (registry.process_env.enabled=false or FICTA_REGISTRY_PROCESS_ENV_ENABLED=0)",
   };
 }
 

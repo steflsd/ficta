@@ -51,6 +51,20 @@ Start with developers who already feel the pain:
 ## Release posture
 
 - Label early releases as beta / pre-1.0.
+- Publish the npm package as `@steflsd/ficta` with the `beta` dist-tag until field-tested.
+- Document beta installs as `npm install -g @steflsd/ficta@beta` until a `latest` release exists.
 - Keep [`threat-model.md`](./threat-model.md) and [`SECURITY.md`](../SECURITY.md) prominent.
 - Encourage `ficta doctor <agent>` before first use.
 - Use fake fixture values for redaction demos; never ask users to prove behavior with real secrets.
+
+## npm beta checklist
+
+```sh
+pnpm check
+pnpm typecheck
+pnpm test
+npm pack --dry-run
+npm publish --access public --tag beta
+git tag v0.1.0-beta.0
+git push origin main --tags
+```

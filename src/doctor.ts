@@ -87,7 +87,7 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
     issues.push({
       severity: "warning",
       message: path
-        ? "no stable surrogate key is active yet; normal launch/install will generate one in ~/.ficta/config.env"
+        ? "no stable surrogate key is active yet; normal launch/install will generate one in ~/.ficta/config.toml"
         : "no stable surrogate key is active; FICTA_CONFIG_FILE=0 means launches use per-process surrogates unless FICTA_SURROGATE_KEY is set",
     });
   }

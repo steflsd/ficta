@@ -50,31 +50,65 @@ resolution, proxy lifecycle, and cleanup.
 
 ## Launch-time discovery UX
 
-`ficta claude` / `ficta codex` / `ficta pi` starts by building a registry snapshot:
+`ficta claude` / `ficta codex` / `ficta pi` starts by building a registry snapshot, but the default
+startup output stays compact:
 
 ```txt
-registry sources:
-  ✓ Doppler CLI (31 values) — loaded via `doppler secrets download --no-file --format json` before launching the agent
-  ✓ env files (12 values) — read 2 file(s)
-      .env: 8 loaded
-      .env.local: 4 loaded
-  ✓ process env (31 values) — auto-enabled because doppler was detected
-  ✓ Doppler env (31 values) — detected; secret-ish process env loaded automatically
+🔒 ficta ready — 47 protected values (48 loaded before dedupe)
+   pi → http://127.0.0.1:59717
+   sources: Doppler 34, .env.local 4, process env 10
 ```
 
-If nothing is loaded, the source report explains what was tried:
+Set `FICTA_VERBOSE=1` or pass `--ficta-verbose` after the agent command for the full safe discovery
+report:
 
 ```txt
-registry sources:
-  - env files (0 values) — looked for .env:.env.local
+source details:
+  ✓ Doppler CLI (34 values) — loaded current config via `doppler secrets download --no-file --format json`; skipped 4 shorter than 8 chars
+      current: 34 loaded
+  ✓ env files (4 values) — read 1 file(s)
       .env: not found
-      .env.local: not found
-  - Doppler CLI (0 values) — no Doppler secrets loaded; configure Doppler or set FICTA_REGISTRY_DOPPLER_ENABLED=0 to skip
-  ! process env (0 values) — 5 secret-ish env var name(s) detected; enable with FICTA_REGISTRY_PROCESS_ENV_ENABLED=1
+      .env.local: 4 loaded
+  ✓ process env (10 values) — enabled for secret-ish env names; skipped 4 shorter than 8 chars, 3 empty
 ```
 
-This replaces the old “turn on raw body logs and inspect JSON” trust step. Raw body logs remain an
-explicit debugging opt-in only.
+If nothing is loaded, the compact summary says so and the existing passthrough/strict-mode warning
+explains what happens next. Run `ficta doctor` when you want the full source report without
+launching an agent.
+
+The source report is safe to print: counts + file/source names only, never values. Raw body logs
+remain an explicit debugging opt-in only.
+
+## Configuring built-in plugins
+
+Persistent user config lives in `~/.ficta/config.toml` (written by `ficta setup`). Shell
+`FICTA_*` environment variables still override the TOML for a single run, but normal plugin/source
+configuration should live in TOML:
+
+```toml
+[registry]
+min_len = 8
+require = false
+
+[registry.env_file]
+enabled = true
+paths = [".env", ".env.local"]
+
+[registry.process_env]
+enabled = true
+mode = "secret-ish"
+
+[registry.doppler]
+enabled = true
+configs = "current" # or "all" / ["dev", "staging", "prod"]
+project = ""
+# command = "doppler"
+timeout_ms = 5000
+```
+
+Set `FICTA_CONFIG_FILE=/path/to/config.toml` to use a different config file; `ficta setup` writes
+to that same path. Set `FICTA_CONFIG_FILE=0` to disable user config loading; setup will then refuse
+to run until you unset it or provide a real path.
 
 ## Built-in registry source: `doppler-cli`
 
@@ -84,30 +118,40 @@ The Doppler CLI plugin runs before the agent launches and attempts to load exact
 doppler secrets download --no-file --format json --no-fallback --silent
 ```
 
-Default:
+Default TOML:
 
-```sh
-FICTA_REGISTRY_DOPPLER_ENABLED=1
+```toml
+[registry.doppler]
+enabled = true
+configs = "current"
 ```
 
 Disable it with:
 
-```sh
-FICTA_REGISTRY_DOPPLER_ENABLED=0 ficta claude
+```toml
+[registry.doppler]
+enabled = false
 ```
 
 By default only Doppler's active config for the current repo/scope is loaded. To cover agents that
 may call other configs, set:
 
-```sh
-FICTA_REGISTRY_DOPPLER_CONFIGS=dev,staging,prod ficta claude
-FICTA_REGISTRY_DOPPLER_CONFIGS=all ficta claude
-FICTA_REGISTRY_DOPPLER_PROJECT=my-project ficta claude  # optional explicit project
+```toml
+[registry.doppler]
+configs = ["dev", "staging", "prod"]
+# or:
+# configs = "all"
+project = "my-project" # optional explicit project
 ```
 
-The command output is parsed in memory, filtered by `FICTA_REGISTRY_MIN_LEN`, and never printed.
+The command output is parsed in memory, filtered by `registry.min_len`, and never printed.
 Discovery output contains only counts/status/config names. The startup timeout defaults to 5 seconds
-and can be changed with `FICTA_REGISTRY_DOPPLER_TIMEOUT_MS`.
+and can be changed with `registry.doppler.timeout_ms`.
+
+`registry.doppler.command` / `FICTA_REGISTRY_DOPPLER_COMMAND` is trusted local config: ficta
+executes that command directly (without a shell) using the current process environment so the real
+Doppler CLI can authenticate. Only point it at a trusted executable you control; do not accept this
+setting from untrusted project files or shell snippets.
 
 This is the source that protects values if the agent later runs `doppler ...`: the secrets are
 already registered before the model session starts. Loading `all` configs is explicit so a dev
@@ -119,18 +163,23 @@ This plugin exposes two discovered sources:
 
 ### Env files
 
-Default:
+Default TOML:
 
-```sh
-FICTA_REGISTRY_ENV_FILE_ENABLED=1
-FICTA_REGISTRY_ENV_FILE_PATHS=.env:.env.local
+```toml
+[registry.env_file]
+enabled = true
+paths = [".env", ".env.local"]
 ```
 
-Use colon-separated paths for extra files, or disable the source:
+Add extra files, or disable the source:
 
-```sh
-FICTA_REGISTRY_ENV_FILE_PATHS=.env:.env.production:config/secrets.env ficta claude
-FICTA_REGISTRY_ENV_FILE_ENABLED=0 ficta claude
+```toml
+[registry.env_file]
+enabled = true
+paths = [".env", ".env.production", "config/secrets.env"]
+
+# or:
+# enabled = false
 ```
 
 ### Process env
@@ -139,17 +188,34 @@ By default, the wrapper loads process-env values whose names look secret-ish. Th
 agent behavior like running `env` or printing tool output that includes inherited API keys. Disable
 it only if the extra exact-match values cause unacceptable false positives:
 
-```sh
-FICTA_REGISTRY_PROCESS_ENV_ENABLED=1 ficta claude        # default for wrapper/setup
-FICTA_REGISTRY_PROCESS_ENV_MODE=secret-ish ficta claude  # secret-ish names only
-FICTA_REGISTRY_PROCESS_ENV_MODE=all ficta claude         # every env var value
-FICTA_REGISTRY_PROCESS_ENV_ENABLED=0 ficta claude        # disabled
+```toml
+[registry.process_env]
+enabled = true
+mode = "secret-ish" # or "all"
+
+# or:
+# enabled = false
 ```
 
 Secret-ish names are matched by a conservative name filter such as `KEY`, `TOKEN`, `SECRET`,
 `PASSWORD`, `JWT`, `DATABASE`, `OPENAI`, `ANTHROPIC`, `AWS`, `GITHUB`, and similar. Proxy-internal
 values that child agents do not need, such as `FICTA_SURROGATE_KEY`, are not passed to the child
 agent process.
+
+## Candidate registry sources (not built yet)
+
+These are plausible future `loadValues()` sources that fit the same launch-time exact-match
+contract as `doppler-cli`. Listed as candidates only — none ship today.
+
+- **`varlock`** — load exact values from a [varlock](https://varlock.dev/) project so its
+  `@sensitive` schema values are protected on the wire. varlock's own boundary is keeping
+  secrets out of *files* the agent reads; a ficta source would extend that to *covered model
+  requests*, the same shape as Doppler. Likely implemented by resolving values at launch (e.g.
+  `varlock load --format json` or reading the resolved `@sensitive` keys) and returning them as
+  `ProtectedValue`s. See [`competitors.md`](./competitors.md) Category F for the boundary split.
+
+Anyone adding one should keep it launch-time, timeout the external call, and never print values —
+same rules as the built-in sources.
 
 ## Optional detector plugins
 

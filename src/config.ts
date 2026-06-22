@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { defaultLogDir } from "./defaults.js";
 import { loadUserConfig } from "./user-config.js";
 
@@ -25,7 +27,7 @@ export function loadConfig(): Config {
     },
     // Override routing entirely (handy for testing).
     forcedUpstream: process.env.FICTA_UPSTREAM,
-    logDir: process.env.FICTA_LOG_DIR ?? defaultLogDir(),
+    logDir: expandHome(process.env.FICTA_LOG_DIR ?? defaultLogDir()),
     // Logs contain REAL request/response bodies — opt in with FICTA_LOG_BODIES=1.
     logBodies: process.env.FICTA_LOG_BODIES === "1",
     // FICTA_QUIET=1 → console shows only model turns, not plugin/mcp/telemetry noise.
@@ -75,4 +77,8 @@ export function resolveTarget(
     return t(cfg.upstreams.openai, pathname, "openai");
   if (pathname.includes("/messages")) return t(cfg.upstreams.anthropic, pathname, "anthropic");
   return t(cfg.upstreams.anthropic, pathname, "anthropic(default)");
+}
+
+function expandHome(path: string): string {
+  return path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }

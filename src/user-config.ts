@@ -3,19 +3,67 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+type TomlScalar = string | number | boolean;
+type TomlValue = TomlScalar | TomlScalar[];
+type TomlTable = { [key: string]: TomlValue | TomlTable };
+type BindingKind = "boolean" | "number" | "string" | "string-array-colon" | "string-array-comma";
+
+interface ConfigBinding {
+  env: string;
+  path: readonly string[];
+  kind: BindingKind;
+}
+
+const CONFIG_BINDINGS: readonly ConfigBinding[] = [
+  { env: "FICTA_REGISTRY_MIN_LEN", path: ["registry", "min_len"], kind: "number" },
+  { env: "FICTA_REQUIRE_REGISTRY", path: ["registry", "require"], kind: "boolean" },
+  { env: "FICTA_REGISTRY_ENV_FILE_ENABLED", path: ["registry", "env_file", "enabled"], kind: "boolean" },
+  { env: "FICTA_REGISTRY_ENV_FILE_PATHS", path: ["registry", "env_file", "paths"], kind: "string-array-colon" },
+  { env: "FICTA_REGISTRY_PROCESS_ENV_ENABLED", path: ["registry", "process_env", "enabled"], kind: "boolean" },
+  { env: "FICTA_REGISTRY_PROCESS_ENV_MODE", path: ["registry", "process_env", "mode"], kind: "string" },
+  { env: "FICTA_REGISTRY_DOPPLER_ENABLED", path: ["registry", "doppler", "enabled"], kind: "boolean" },
+  { env: "FICTA_REGISTRY_DOPPLER_CONFIGS", path: ["registry", "doppler", "configs"], kind: "string-array-comma" },
+  { env: "FICTA_REGISTRY_DOPPLER_PROJECT", path: ["registry", "doppler", "project"], kind: "string" },
+  { env: "FICTA_REGISTRY_DOPPLER_COMMAND", path: ["registry", "doppler", "command"], kind: "string" },
+  { env: "FICTA_REGISTRY_DOPPLER_TIMEOUT_MS", path: ["registry", "doppler", "timeout_ms"], kind: "number" },
+  { env: "FICTA_FAIL_CLOSED", path: ["redaction", "fail_closed"], kind: "boolean" },
+  { env: "FICTA_REDACT_PATHS", path: ["redaction", "redact_paths"], kind: "boolean" },
+  { env: "FICTA_LOG_BODIES", path: ["logging", "log_bodies"], kind: "boolean" },
+  { env: "FICTA_LOG_DIR", path: ["logging", "log_dir"], kind: "string" },
+  { env: "FICTA_SURROGATE_KEY", path: ["surrogate", "key"], kind: "string" },
+  { env: "FICTA_PORT", path: ["runtime", "port"], kind: "number" },
+  { env: "FICTA_QUIET", path: ["runtime", "quiet"], kind: "boolean" },
+  { env: "FICTA_ANTHROPIC_UPSTREAM", path: ["upstreams", "anthropic"], kind: "string" },
+  { env: "FICTA_OPENAI_UPSTREAM", path: ["upstreams", "openai"], kind: "string" },
+  { env: "FICTA_CHATGPT_UPSTREAM", path: ["upstreams", "chatgpt"], kind: "string" },
+  { env: "FICTA_UPSTREAM", path: ["upstreams", "forced"], kind: "string" },
+];
+
+const SECTION_ORDER: ReadonlyArray<{ path: readonly string[]; keys: readonly string[] }> = [
+  { path: ["registry"], keys: ["min_len", "require"] },
+  { path: ["registry", "env_file"], keys: ["enabled", "paths"] },
+  { path: ["registry", "process_env"], keys: ["enabled", "mode"] },
+  { path: ["registry", "doppler"], keys: ["enabled", "configs", "project", "command", "timeout_ms"] },
+  { path: ["redaction"], keys: ["fail_closed", "redact_paths"] },
+  { path: ["logging"], keys: ["log_bodies", "log_dir"] },
+  { path: ["surrogate"], keys: ["key"] },
+  { path: ["runtime"], keys: ["port", "quiet"] },
+  { path: ["upstreams"], keys: ["anthropic", "openai", "chatgpt", "forced"] },
+];
+
 let loaded = false;
 
 export function defaultConfigPath(): string {
-  return join(homedir(), ".ficta", "config.env");
+  return join(homedir(), ".ficta", "config.toml");
 }
 
 export function configPath(): string | undefined {
   const setting = process.env.FICTA_CONFIG_FILE;
   if (setting === "0") return undefined;
-  return setting || defaultConfigPath();
+  return setting ? expandHome(setting) : defaultConfigPath();
 }
 
-/** Load ~/.ficta/config.env into process.env without overriding explicit env vars. */
+/** Load ~/.ficta/config.toml into process.env-style runtime settings without overriding explicit env vars. */
 export function loadUserConfig(): void {
   if (loaded) return;
   loaded = true;
@@ -23,14 +71,19 @@ export function loadUserConfig(): void {
   const path = configPath();
   if (!path || !existsSync(path)) return;
 
-  for (const { key, value } of parseEnvFile(readFileSync(path, "utf8"))) {
+  for (const [key, value] of Object.entries(readUserConfig(path))) {
     process.env[key] ??= value;
   }
 }
 
+/** Test helper for modules that need to reload a temp config file in one process. */
+export function resetUserConfigForTests(): void {
+  loaded = false;
+}
+
 export function writeUserConfig(values: Record<string, string>, path = defaultConfigPath()): void {
   ensurePrivateDir(dirname(path));
-  writeFileSync(path, renderEnv(values), { mode: 0o600 });
+  writeFileSync(path, renderToml(values), { mode: 0o600 });
   try {
     chmodSync(path, 0o600);
   } catch {
@@ -38,12 +91,10 @@ export function writeUserConfig(values: Record<string, string>, path = defaultCo
   }
 }
 
-/** Read an existing config file into a plain map (empty if missing). */
+/** Read an existing TOML config file into the effective FICTA_* setting map (empty if missing). */
 export function readUserConfig(path = defaultConfigPath()): Record<string, string> {
   if (!path || !existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const { key, value } of parseEnvFile(readFileSync(path, "utf8"))) out[key] = value;
-  return out;
+  return configObjectToEnv(parseToml(readFileSync(path, "utf8")));
 }
 
 /**
@@ -67,6 +118,10 @@ export function ensureSurrogateKey(path = configPath()): { generated: boolean; p
   return { generated: true, path };
 }
 
+function expandHome(path: string): string {
+  return path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+}
+
 function ensurePrivateDir(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   try {
@@ -76,52 +131,264 @@ function ensurePrivateDir(path: string): void {
   }
 }
 
-function renderEnv(values: Record<string, string>): string {
-  const lines = ["# Generated by `ficta setup`.", "# Shell environment variables override this file.", ""];
-  for (const [key, value] of Object.entries(values)) lines.push(`${key}=${quoteEnvValue(value)}`);
+function renderToml(values: Record<string, string>): string {
+  const tree = envToConfigObject(values);
+  const lines = ["# Generated by ficta.", "# Shell environment variables override this file."];
+
+  for (const section of SECTION_ORDER) appendSection(lines, tree, section.path, section.keys);
   return `${lines.join("\n")}\n`;
 }
 
-function quoteEnvValue(value: string): string {
-  if (/^[A-Za-z0-9_./:,@+=-]*$/.test(value)) return value;
-  return JSON.stringify(value);
+function appendSection(lines: string[], root: TomlTable, path: readonly string[], keys: readonly string[]): void {
+  const table = getTable(root, path);
+  if (!table) return;
+  const entries = keys
+    .map((key): [string, TomlValue | undefined] => [key, tomlValue(table[key])])
+    .filter((entry): entry is [string, TomlValue] => entry[1] !== undefined);
+  if (entries.length === 0) return;
+
+  lines.push("", `[${path.join(".")}]`);
+  for (const [key, value] of entries) lines.push(`${key} = ${formatTomlValue(value)}`);
 }
 
-function parseEnvFile(text: string): Array<{ key: string; value: string }> {
-  const out: Array<{ key: string; value: string }> = [];
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!match) continue;
-    const key = match[1] ?? "";
-    const rawValue = (match[2] ?? "").trim();
-    out.push({ key, value: parseEnvValue(rawValue) });
+function envToConfigObject(values: Record<string, string>): TomlTable {
+  const root: TomlTable = {};
+  for (const binding of CONFIG_BINDINGS) {
+    if (!Object.hasOwn(values, binding.env)) continue;
+    setPath(root, binding.path, envValueToToml(values[binding.env] ?? "", binding.kind));
+  }
+  return root;
+}
+
+function configObjectToEnv(root: TomlTable): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const binding of CONFIG_BINDINGS) {
+    const value = getPath(root, binding.path);
+    const envValue = value === undefined ? undefined : tomlValueToEnv(value, binding.kind);
+    if (envValue !== undefined) out[binding.env] = envValue;
   }
   return out;
 }
 
-function parseEnvValue(raw: string): string {
-  if (!raw) return "";
-  const quote = raw[0];
-  if ((quote === '"' || quote === "'") && raw.endsWith(quote)) {
-    const inner = raw.slice(1, -1);
-    return quote === '"' ? unescapeDoubleQuoted(inner) : inner;
+function envValueToToml(value: string, kind: BindingKind): TomlValue {
+  switch (kind) {
+    case "boolean":
+      return parseBoolean(value) ?? value;
+    case "number": {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : value;
+    }
+    case "string-array-colon":
+      return value.split(":").filter(Boolean);
+    case "string-array-comma": {
+      const trimmed = value.trim();
+      if (trimmed.includes(","))
+        return trimmed
+          .split(",")
+          .map((part) => part.trim())
+          .filter(Boolean);
+      return trimmed;
+    }
+    case "string":
+      return value;
   }
-  return raw.replace(/\s+#.*$/, "").trim();
 }
 
-function unescapeDoubleQuoted(value: string): string {
-  return value.replace(/\\(["\\nrt])/g, (_m, ch: string) => {
-    switch (ch) {
-      case "n":
-        return "\n";
-      case "r":
-        return "\r";
-      case "t":
-        return "\t";
-      default:
-        return ch;
+function tomlValueToEnv(value: TomlValue | TomlTable, kind: BindingKind): string | undefined {
+  if (tomlValue(value) === undefined) return undefined;
+  switch (kind) {
+    case "boolean": {
+      if (typeof value === "boolean") return value ? "1" : "0";
+      const parsed = typeof value === "string" ? parseBoolean(value) : undefined;
+      return parsed === undefined ? String(value) : parsed ? "1" : "0";
     }
-  });
+    case "number":
+      return String(value);
+    case "string-array-colon":
+      return Array.isArray(value) ? value.map(String).join(":") : String(value);
+    case "string-array-comma":
+      return Array.isArray(value) ? value.map(String).join(",") : String(value);
+    case "string":
+      return String(value);
+  }
+}
+
+function parseBoolean(value: string): boolean | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "on", "enabled", "yes"].includes(normalized)) return true;
+  if (["0", "false", "off", "disabled", "no"].includes(normalized)) return false;
+  return undefined;
+}
+
+function getTable(root: TomlTable, path: readonly string[]): TomlTable | undefined {
+  let cursor: TomlTable = root;
+  for (const part of path) {
+    const next = cursor[part];
+    if (!isTable(next)) return undefined;
+    cursor = next;
+  }
+  return cursor;
+}
+
+function getPath(root: TomlTable, path: readonly string[]): TomlValue | TomlTable | undefined {
+  let cursor: TomlValue | TomlTable | undefined = root;
+  for (const part of path) {
+    if (!isTable(cursor)) return undefined;
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function setPath(root: TomlTable, path: readonly string[], value: TomlValue): void {
+  let cursor = root;
+  for (const part of path.slice(0, -1)) {
+    const current = cursor[part];
+    if (!isTable(current)) cursor[part] = {};
+    cursor = cursor[part] as TomlTable;
+  }
+  cursor[path[path.length - 1] ?? ""] = value;
+}
+
+function isTable(value: TomlValue | TomlTable | undefined): value is TomlTable {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function tomlValue(value: TomlValue | TomlTable | undefined): TomlValue | undefined {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || Array.isArray(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+function formatTomlValue(value: TomlValue): string {
+  if (Array.isArray(value)) return `[${value.map(formatTomlScalar).join(", ")}]`;
+  return formatTomlScalar(value);
+}
+
+function formatTomlScalar(value: TomlScalar): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
+
+function parseToml(text: string): TomlTable {
+  const root: TomlTable = {};
+  let current = root;
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = stripTomlComment(rawLine).trim();
+    if (!line) continue;
+
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      current = ensureTable(
+        root,
+        sectionMatch[1]
+          ?.split(".")
+          .map((part) => part.trim())
+          .filter(Boolean) ?? [],
+      );
+      continue;
+    }
+
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) continue;
+    current[key] = parseTomlValue(line.slice(eq + 1).trim());
+  }
+
+  return root;
+}
+
+function ensureTable(root: TomlTable, path: readonly string[]): TomlTable {
+  let cursor = root;
+  for (const part of path) {
+    const current = cursor[part];
+    if (!isTable(current)) cursor[part] = {};
+    cursor = cursor[part] as TomlTable;
+  }
+  return cursor;
+}
+
+function stripTomlComment(line: string): string {
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (quote === '"' && ch === "\\" && !escaped) {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote && !escaped) quote = undefined;
+      escaped = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+function parseTomlValue(raw: string): TomlValue {
+  if (raw.startsWith("[") && raw.endsWith("]")) return parseTomlArray(raw.slice(1, -1));
+  if (raw.startsWith('"') && raw.endsWith('"')) return parseDoubleQuoted(raw);
+  if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1);
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (/^[+-]?\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
+  return raw;
+}
+
+function parseTomlArray(raw: string): TomlScalar[] {
+  const items: TomlScalar[] = [];
+  for (const item of splitTomlArray(raw)) {
+    const value = parseTomlValue(item);
+    if (Array.isArray(value)) continue;
+    items.push(value);
+  }
+  return items;
+}
+
+function splitTomlArray(raw: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (quote) {
+      if (quote === '"' && ch === "\\" && !escaped) {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote && !escaped) quote = undefined;
+      escaped = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ",") {
+      const item = raw.slice(start, i).trim();
+      if (item) out.push(item);
+      start = i + 1;
+    }
+  }
+  const last = raw.slice(start).trim();
+  if (last) out.push(last);
+  return out;
+}
+
+function parseDoubleQuoted(raw: string): string {
+  try {
+    return JSON.parse(raw) as string;
+  } catch {
+    return raw.slice(1, -1);
+  }
 }

@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { confirm, intro, isCancel, multiselect, note, outro, select, text } from "@clack/prompts";
-import { compactUserConfig, defaultLogDir, FICTA_DEFAULTS } from "./defaults.js";
+import { defaultLogDir, FICTA_DEFAULTS } from "./defaults.js";
 import { installShims } from "./install.js";
-import { defaultConfigPath, writeUserConfig } from "./user-config.js";
+import { configPath, readUserConfig, writeUserConfig } from "./user-config.js";
 
 export interface SetupOptions {
   supportedAgents: readonly string[];
@@ -76,7 +76,7 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
 
   const hadSurrogateKey = Boolean(process.env.FICTA_SURROGATE_KEY);
   const stableSurrogates = await promptConfirm(
-    "Generate a stable local surrogate key? (recommended — keeps surrogates consistent across sessions; stored 0600 in ~/.ficta/config.env, never printed or sent anywhere)",
+    "Generate a stable local surrogate key? (recommended — keeps surrogates consistent across sessions; stored 0600 in ~/.ficta/config.toml, never printed or sent anywhere)",
     true,
   );
 
@@ -104,8 +104,10 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
     values.FICTA_SURROGATE_KEY = process.env.FICTA_SURROGATE_KEY || randomBytes(32).toString("hex");
   }
 
-  const path = defaultConfigPath();
-  writeUserConfig(compactUserConfig(values), path);
+  const path = setupConfigPath();
+  const nextConfig = { ...readUserConfig(path), ...values };
+  if (!stableSurrogates) delete nextConfig.FICTA_SURROGATE_KEY;
+  writeUserConfig(nextConfig, path);
   note(path, "Wrote config");
   if (stableSurrogates) {
     note(
@@ -200,6 +202,17 @@ function configModeDefault(value: string | undefined): DopplerConfigMode {
   if (value === "all") return "all";
   if (value && value !== "current") return "explicit";
   return "current";
+}
+
+function setupConfigPath(): string {
+  const path = configPath();
+  if (path) return path;
+  note(
+    "FICTA_CONFIG_FILE=0 disables persistent config loading. Unset it, or set FICTA_CONFIG_FILE=/path/to/config.toml, then rerun setup.",
+    "No config file target",
+  );
+  outro("setup cancelled");
+  process.exit(2);
 }
 
 function abortSetup(): never {
