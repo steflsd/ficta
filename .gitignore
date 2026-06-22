@@ -1,0 +1,16 @@
+node_modules/
+dist/
+logs/
+*.log
+.DS_Store
+
+# local/private config
+.env
+.env.*
+!.env.example
+.ficta/
+.claude/
+
+# package/build artifacts
+*.tgz
+coverage/

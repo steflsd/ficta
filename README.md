@@ -11,17 +11,34 @@ to send** rather than leak.
 
 ## Who it's for
 
-Individual devs using coding agents — **Claude Code and Codex, including ChatGPT-subscription /
-OAuth Codex** — who don't want real keys landing in a provider's request logs, training data, or
-the append-only context window. Especially people on **subscription auth**, who today have no
-secret-hygiene option. It's a personal hygiene / peace-of-mind tool, not enterprise DLP or a
-compliance product.
+Individual devs using coding agents — **Claude Code, Codex, and Pi**, including
+ChatGPT-subscription / OAuth Codex — who don't want real keys landing in a provider's request logs,
+training data, or the append-only context window. Especially people on **subscription auth**, who
+today have no secret-hygiene option. It's a personal hygiene / peace-of-mind tool, not enterprise
+DLP or a compliance product.
+
+## Why this exists
+
+This started from a recurring annoyance: an agent would read a real key into context, then
+helpfully say some version of "you should rotate that now." Rotating is the right advice after a
+leak, but the better workflow is to avoid putting the secret in the model session in the first
+place. ficta is that local airlock: let the agent keep working with files and commands, while the
+provider sees deterministic placeholders for the registered values.
+
+## Requirements
+
+- Node.js 20+
+- pnpm 11+ via Corepack or a local install
+- one of the supported coding-agent CLIs: `claude`, `codex`, or `pi`
+- optional: Doppler CLI, if you want ficta to load Doppler-managed secrets at launch
 
 ## Quick start
 
-Install once, then keep using your normal agent commands:
+Install once from this checkout, then keep using your normal agent commands:
 
 ```sh
+git clone https://github.com/steflsd/ficta.git
+cd ficta
 pnpm install
 pnpm ficta setup            # configure ~/.ficta/config.env; optionally installs shims
 # or: pnpm ficta install    # installs ~/.ficta/bin/{ficta,claude,codex,pi} shims directly
@@ -56,7 +73,7 @@ Manual (no wrapper):
 ```sh
 pnpm dev                                          # proxy on :8787
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
-# Codex: see docs/codex-oauth-intercept.md
+# Codex: see ./docs/codex-oauth-intercept.md
 ```
 
 **Registry = zero config.** At launch, built-in registry-source plugins discover `.env` files,
@@ -82,7 +99,7 @@ fail-closed gate enforces that registered values do not leave verbatim.
   hit **names + JSON paths**, never values.
 - **Boundary (non-goals):** ficta is *not* a sandbox, enterprise DLP, or a compliance control — it
   doesn't stop the agent itself exfiltrating via `curl` (that's OS/egress territory; see
-  `docs/exfil-and-egress.md`), and unregistered/transformed values get only best-effort coverage,
+  [`docs/exfil-and-egress.md`](./docs/exfil-and-egress.md)), and unregistered/transformed values get only best-effort coverage,
   not the exact-match guarantee.
 
 ## Plugin architecture
@@ -99,16 +116,16 @@ ficta has a narrow plugin seam around a small, well-tested core:
 
 See [`docs/plugins.md`](./docs/plugins.md) for the plugin/source contract and launch discovery UX.
 
-## What makes it different (honestly)
+## What makes it different
 
-Not a tech moat — the pieces exist elsewhere. What ficta combines that others don't:
+ficta is not a new cryptographic primitive; the pieces exist elsewhere. What it combines that others don't:
 1. Works for coding agents on **subscription/OAuth auth** (Codex-ChatGPT, Claude Pro) — most
    privacy tools assume API keys.
 2. A **provable, fail-closed exact-match check for known secrets in covered request surfaces** — vs probabilistic PII detection.
 3. **Reversible round-trip through streaming tool-calls** so the agent keeps working.
 4. **Zero-config local install.**
 
-See [`COMPETITORS.md`](./COMPETITORS.md) for the full landscape and
+See [`docs/competitors.md`](./docs/competitors.md) for the full landscape and
 [`docs/publishing.md`](./docs/publishing.md) for public-positioning guardrails.
 
 ## Status
@@ -121,6 +138,18 @@ latency) — see [`docs/benchmarks.md`](./docs/benchmarks.md).
 The `ficta claude` / `ficta codex` / `ficta pi` wrappers use agent-integration plugins. Claude and
 Codex are verified against real sessions; Pi uses a temporary extension to override Anthropic/OpenAI
 provider base URLs and should work for those providers.
+
+## Planned
+
+These are roadmap items, not part of the current exact-match guarantee:
+
+- **PII anonymization + restore plugins** for values such as emails, phone numbers, names, orgs, or
+  custom patterns. These will be best-effort detector/anonymizer plugins unless values are explicitly
+  registered.
+- **Longer-lived local sessions** so surrogate mappings can optionally survive beyond one agent run.
+  Today, registry values and mappings are in memory for the current agent/proxy session only, with a
+  stable local surrogate key used to keep placeholders deterministic.
+- **More agent/provider adapters** as their routing hooks become clear.
 
 ## Config
 
@@ -151,7 +180,7 @@ FICTA_DISABLE=1 claude                   # bypass an installed shim once
 ```
 
 Advanced/diagnostic overrides still exist for ports, upstreams, timeouts, and source toggles; see
-`.env.example` and `docs/plugins.md` for details.
+`.env.example` and [`docs/plugins.md`](./docs/plugins.md) for details.
 
 > ⚠️ Set `FICTA_LOG_BODIES=1` only for debugging: raw body logs may contain real secrets. Leave it
 > unset/`0` for normal use.
@@ -173,9 +202,9 @@ pnpm typecheck
 
 ## Docs
 
-- [`THREAT_MODEL.md`](./THREAT_MODEL.md) — precise promise, covered surfaces, and non-goals
+- [`docs/threat-model.md`](./docs/threat-model.md) — precise promise, covered surfaces, and non-goals
 - [`SECURITY.md`](./SECURITY.md) — scoped vulnerability reporting and expected limitations
-- [`PLAN.md`](./PLAN.md) — historical architecture notes / aspirational phase-2 detail
+- [`docs/architecture-plan.md`](./docs/architecture-plan.md) — historical architecture notes / aspirational phase-2 detail
 - [`docs/install.md`](./docs/install.md) — installing transparent `claude`/`codex`/`pi` shims
 - [`docs/plugins.md`](./docs/plugins.md) — registry-source/detector plugin architecture
 - [`docs/decisions.md`](./docs/decisions.md) — scoping decisions (D1–D7)
@@ -184,7 +213,7 @@ pnpm typecheck
 - [`docs/codex-oauth-intercept.md`](./docs/codex-oauth-intercept.md) — routing Codex on ChatGPT/OAuth
 - [`docs/benchmarks.md`](./docs/benchmarks.md) — performance
 - [`docs/publishing.md`](./docs/publishing.md) — beta publishing/positioning guardrails
-- [`COMPETITORS.md`](./COMPETITORS.md) — competitive landscape
+- [`docs/competitors.md`](./docs/competitors.md) — competitive landscape
 
 ## Limitations
 
@@ -202,3 +231,7 @@ pnpm typecheck
 - Restore is exact-match surrogate replacement today; restoring values with quotes/newlines into a
   tool-call JSON arg can be imperfect (fine for typical alphanumeric keys/tokens).
 - Not a sandbox (see non-goals above).
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE).
