@@ -189,12 +189,18 @@ process.stderr.write(
   }),
 );
 
-if (
-  proxy.protectedValues === 0 &&
-  process.env.FICTA_REQUIRE_REGISTRY === "1" &&
-  !allowEmpty &&
-  process.env.FICTA_ALLOW_EMPTY !== "1"
-) {
+const strictRegistry =
+  process.env.FICTA_REQUIRE_REGISTRY === "1" && !allowEmpty && process.env.FICTA_ALLOW_EMPTY !== "1";
+if (strictRegistry && proxy.registry.some((discovery) => discovery.status === "error")) {
+  process.stderr.write(
+    "\n🛑 ficta registry source error(s) were reported and FICTA_REQUIRE_REGISTRY=1 is set.\n" +
+      "   Run `ficta doctor` or disable/fix the failing source before launching.\n",
+  );
+  proxy.close();
+  process.exit(2);
+}
+
+if (proxy.protectedValues === 0 && strictRegistry) {
   process.stderr.write(
     "\n🛑 ficta found no protected values and FICTA_REQUIRE_REGISTRY=1 is set.\n" +
       "   Add .env values, configure a registry source, run `ficta setup`,\n" +

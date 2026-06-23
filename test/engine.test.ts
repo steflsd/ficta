@@ -30,6 +30,26 @@ describe("protection engine plugins", () => {
     expect(engine.restoreText(redacted.body)).toContain(SECRET);
   });
 
+  it("isolates detector plugin exceptions", () => {
+    const engine = new ProtectionEngine({
+      plugins: [
+        {
+          kind: "detector",
+          name: "throwing-detector",
+          detectText: () => {
+            throw new Error("boom");
+          },
+        },
+      ],
+    });
+
+    expect(engine.redactBody(JSON.stringify({ content: SECRET }))).toEqual({
+      body: JSON.stringify({ content: SECRET }),
+      count: 0,
+      leaks: 0,
+    });
+  });
+
   it("supports request-time detector plugins for future PII-style values", () => {
     const piiPlugin: DetectorPlugin = {
       kind: "detector",

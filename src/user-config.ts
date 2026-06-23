@@ -15,6 +15,7 @@ const CORE_CONFIG_BINDINGS: readonly ConfigBinding[] = [
   { env: "FICTA_FAIL_CLOSED", path: ["redaction", "fail_closed"], kind: "boolean" },
   { env: "FICTA_REDACT_PATHS", path: ["redaction", "redact_paths"], kind: "boolean" },
   { env: "FICTA_LOG_BODIES", path: ["logging", "log_bodies"], kind: "boolean" },
+  { env: "FICTA_LOG_MAX_BYTES", path: ["logging", "max_bytes"], kind: "number" },
   { env: "FICTA_LOG_DIR", path: ["logging", "log_dir"], kind: "string" },
   { env: "FICTA_SURROGATE_KEY", path: ["surrogate", "key"], kind: "string" },
   { env: "FICTA_PORT", path: ["runtime", "port"], kind: "number" },
@@ -23,15 +24,16 @@ const CORE_CONFIG_BINDINGS: readonly ConfigBinding[] = [
   { env: "FICTA_OPENAI_UPSTREAM", path: ["upstreams", "openai"], kind: "string" },
   { env: "FICTA_CHATGPT_UPSTREAM", path: ["upstreams", "chatgpt"], kind: "string" },
   { env: "FICTA_UPSTREAM", path: ["upstreams", "forced"], kind: "string" },
+  { env: "FICTA_ALLOW_CUSTOM_UPSTREAM", path: ["upstreams", "allow_custom"], kind: "boolean" },
 ];
 
 const CORE_SECTION_ORDER: readonly ConfigSection[] = [
   { path: ["registry"], keys: ["min_len", "require"] },
   { path: ["redaction"], keys: ["fail_closed", "redact_paths"] },
-  { path: ["logging"], keys: ["log_bodies", "log_dir"] },
+  { path: ["logging"], keys: ["log_bodies", "max_bytes", "log_dir"] },
   { path: ["surrogate"], keys: ["key"] },
   { path: ["runtime"], keys: ["port", "quiet"] },
-  { path: ["upstreams"], keys: ["anthropic", "openai", "chatgpt", "forced"] },
+  { path: ["upstreams"], keys: ["anthropic", "openai", "chatgpt", "forced", "allow_custom"] },
 ];
 
 function configBindings(): ConfigBinding[] {

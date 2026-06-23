@@ -5,12 +5,24 @@ import { loadUserConfig } from "./user-config.js";
 
 loadUserConfig();
 
+export const DEFAULT_UPSTREAMS = {
+  anthropic: "https://api.anthropic.com",
+  openai: "https://api.openai.com",
+  // Codex on ChatGPT/OAuth auth talks to the ChatGPT backend, not the API.
+  chatgpt: "https://chatgpt.com",
+} as const;
+
+const DEFAULT_UPSTREAM_ORIGINS = new Set(Object.values(DEFAULT_UPSTREAMS).map((url) => new URL(url).origin));
+const DEFAULT_LOG_MAX_BYTES = 256 * 1024;
+
 export interface Config {
   port: number;
   upstreams: { anthropic: string; openai: string; chatgpt: string };
   forcedUpstream?: string;
+  allowCustomUpstream: boolean;
   logDir: string;
   logBodies: boolean;
+  logMaxBytes: number;
   quiet: boolean;
   failClosed: boolean;
   silent: boolean;
@@ -20,16 +32,17 @@ export function loadConfig(): Config {
   return {
     port: Number(process.env.FICTA_PORT ?? 8787),
     upstreams: {
-      anthropic: process.env.FICTA_ANTHROPIC_UPSTREAM ?? "https://api.anthropic.com",
-      openai: process.env.FICTA_OPENAI_UPSTREAM ?? "https://api.openai.com",
-      // Codex on ChatGPT/OAuth auth talks to the ChatGPT backend, not the API.
-      chatgpt: process.env.FICTA_CHATGPT_UPSTREAM ?? "https://chatgpt.com",
+      anthropic: process.env.FICTA_ANTHROPIC_UPSTREAM ?? DEFAULT_UPSTREAMS.anthropic,
+      openai: process.env.FICTA_OPENAI_UPSTREAM ?? DEFAULT_UPSTREAMS.openai,
+      chatgpt: process.env.FICTA_CHATGPT_UPSTREAM ?? DEFAULT_UPSTREAMS.chatgpt,
     },
-    // Override routing entirely (handy for testing).
+    // Override routing entirely (handy for testing with loopback upstreams).
     forcedUpstream: process.env.FICTA_UPSTREAM,
+    allowCustomUpstream: envFlag(process.env.FICTA_ALLOW_CUSTOM_UPSTREAM),
     logDir: expandHome(process.env.FICTA_LOG_DIR ?? defaultLogDir()),
     // Logs contain REAL request/response bodies — opt in with FICTA_LOG_BODIES=1.
     logBodies: process.env.FICTA_LOG_BODIES === "1",
+    logMaxBytes: boundedInt(process.env.FICTA_LOG_MAX_BYTES, DEFAULT_LOG_MAX_BYTES, 1024, 16 * 1024 * 1024),
     // FICTA_QUIET=1 → console shows only model turns, not plugin/mcp/telemetry noise.
     quiet: process.env.FICTA_QUIET === "1",
     // Privacy boundary: refuse to forward if a registered value survived redaction. Default ON.
@@ -79,6 +92,47 @@ export function resolveTarget(
   return t(cfg.upstreams.anthropic, pathname, "anthropic(default)");
 }
 
+export function upstreamPolicyIssue(cfg: Config, target: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return `invalid upstream URL: ${target}`;
+  }
+
+  if (DEFAULT_UPSTREAM_ORIGINS.has(url.origin) || isLoopbackHost(url.hostname)) return undefined;
+  if (!cfg.allowCustomUpstream) {
+    return `custom upstream ${url.origin} requires FICTA_ALLOW_CUSTOM_UPSTREAM=1 before provider auth headers are forwarded`;
+  }
+  if (url.protocol !== "https:") return `non-loopback custom upstream ${url.origin} must use https`;
+  return undefined;
+}
+
+export function configuredUpstreamPolicyIssues(cfg: Config): string[] {
+  const bases = [cfg.forcedUpstream, cfg.upstreams.anthropic, cfg.upstreams.openai, cfg.upstreams.chatgpt].filter(
+    (value): value is string => Boolean(value),
+  );
+  return [
+    ...new Set(bases.map((base) => upstreamPolicyIssue(cfg, base)).filter((issue): issue is string => Boolean(issue))),
+  ];
+}
+
 function expandHome(path: string): string {
   return path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+}
+
+function envFlag(value: string | undefined): boolean {
+  const raw = value?.toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes" || raw === "enabled";
+}
+
+function boundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  const n = Number(value ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "localhost" || normalized === "::1" || normalized.startsWith("127.");
 }

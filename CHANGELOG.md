@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Hardened Doppler registry loading by refusing project-local/world-writable Doppler commands and running the Doppler subprocess with a minimal environment.
+- Added custom upstream guardrails: non-default non-loopback upstreams now require `FICTA_ALLOW_CUSTOM_UPSTREAM=1`, and remote custom upstreams must use HTTPS.
+- Improved registry-source failure handling so strict registry mode blocks on source errors, env-file read errors are reported per file, and detector plugin exceptions do not take down proxy requests.
+- Improved `.env` compatibility for common double-quoted escape sequences such as `\n`.
+- Added `FICTA_LOG_MAX_BYTES` to cap response log/inspection buffering.
 - Simplified the Doppler setup prompt to global active/all coverage choices while keeping named configs available via manual config/env overrides.
 - Added development guidance requiring `CHANGELOG.md` updates for meaningful changes.
 - Added `ficta --version` / `ficta version`, showing `+dev` when running from a source checkout.

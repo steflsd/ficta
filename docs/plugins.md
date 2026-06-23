@@ -168,9 +168,10 @@ Discovery output contains only counts/status/config names. The startup timeout d
 and can be changed with `registry.doppler.timeout_ms`.
 
 `registry.doppler.command` / `FICTA_REGISTRY_DOPPLER_COMMAND` is trusted local config: ficta
-executes that command directly (without a shell) using the current process environment so the real
-Doppler CLI can authenticate. Only point it at a trusted executable you control; do not accept this
-setting from untrusted project files or shell snippets.
+executes that command directly (without a shell), refuses project-local or world-writable resolved
+commands, and passes a minimal Doppler/HOME/proxy environment so the real Doppler CLI can
+authenticate. Only point it at a trusted executable you control; do not accept this setting from
+untrusted project files or shell snippets.
 
 This is the source that protects values if the agent later runs `doppler ...`: the secrets are
 already registered before the model session starts. Loading `all` configs is explicit so a dev

@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { findExecutable } from "../install.js";
 import type { PluginDiscovery, ProtectedValue, RegistrySetupSource, RegistrySourcePlugin } from "./types.js";
 
@@ -27,7 +29,15 @@ export interface DopplerStats {
   cliAvailable: boolean;
   exitCode?: number | null;
   timedOut: boolean;
-  error?: "missing_cli" | "download_failed" | "config_list_failed" | "no_configs" | "invalid_json" | "unsupported_json";
+  error?:
+    | "missing_cli"
+    | "unsafe_command"
+    | "download_failed"
+    | "config_list_failed"
+    | "no_configs"
+    | "invalid_json"
+    | "unsupported_json";
+  unsafeCommandReason?: string;
   configDetails: DopplerConfigStat[];
 }
 
@@ -42,7 +52,8 @@ interface DopplerCommandResult {
   stdout: string;
   exitCode?: number | null;
   timedOut: boolean;
-  error?: "missing_cli" | "command_failed";
+  error?: "missing_cli" | "unsafe_command" | "command_failed";
+  message?: string;
 }
 
 const PLUGIN_NAME = "doppler-cli";
@@ -109,7 +120,7 @@ export function loadDopplerValues(): ProtectedValue[] {
     const result = runDoppler(stats, secretsDownloadArgs(stats, target));
     updateCommandStats(stats, result);
     if (!result.ok) {
-      stats.error ??= result.error === "missing_cli" ? "missing_cli" : "download_failed";
+      stats.error ??= commandError(result.error, "download_failed");
       stats.configDetails.push({ label: target.label, loaded: 0, status: "error" });
       continue;
     }
@@ -224,7 +235,7 @@ function resolveDopplerTargets(
     const result = runDoppler(stats, configsListArgs(stats));
     updateCommandStats(stats, result);
     if (!result.ok) {
-      return { ok: false, error: result.error === "missing_cli" ? "missing_cli" : "config_list_failed" };
+      return { ok: false, error: commandError(result.error, "config_list_failed") };
     }
 
     const parsed = parseDopplerConfigsJson(result.stdout);
@@ -284,9 +295,9 @@ function dopplerDiscovery(stats: DopplerStats): PluginDiscovery {
       id: `${PLUGIN_NAME}/secrets-download`,
       plugin: PLUGIN_NAME,
       label: "Doppler CLI",
-      status: "loaded",
+      status: stats.error ? "error" : "loaded",
       valueCount: stats.loaded,
-      message: `loaded ${scope} via \`doppler secrets download --no-file --format json\`${skipped}`,
+      message: `loaded ${scope} via \`doppler secrets download --no-file --format json\`${stats.error ? "; some config(s) failed" : ""}${skipped}`,
       details,
     };
   }
@@ -310,6 +321,17 @@ function dopplerDiscovery(stats: DopplerStats): PluginDiscovery {
       status: "not_found",
       valueCount: 0,
       message: "doppler executable not found",
+    };
+  }
+
+  if (stats.error === "unsafe_command") {
+    return {
+      id: `${PLUGIN_NAME}/secrets-download`,
+      plugin: PLUGIN_NAME,
+      label: "Doppler CLI",
+      status: "error",
+      valueCount: 0,
+      message: `refused to run untrusted Doppler command${stats.unsafeCommandReason ? `: ${stats.unsafeCommandReason}` : ""}`,
     };
   }
 
@@ -403,6 +425,14 @@ function configModeDefault(value: string | undefined): DopplerSetupConfigMode {
   return value === "all" ? "all" : "current";
 }
 
+function commandError(
+  error: DopplerCommandResult["error"],
+  fallback: "download_failed" | "config_list_failed",
+): NonNullable<DopplerStats["error"]> {
+  if (error === "missing_cli" || error === "unsafe_command") return error;
+  return fallback;
+}
+
 function registryDopplerMode(): DopplerRegistryMode {
   const raw = (process.env.FICTA_REGISTRY_DOPPLER_ENABLED ?? "1").trim().toLowerCase();
   if (["0", "false", "off", "disabled", "no"].includes(raw)) return "disabled";
@@ -445,9 +475,20 @@ function cacheKey(): string {
 }
 
 function runDoppler(stats: DopplerStats, args: string[]): DopplerCommandResult {
-  const result = spawnSync(stats.command, args, {
+  const resolved = resolveDopplerCommand(stats.command);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      stdout: "",
+      timedOut: false,
+      error: resolved.error,
+      message: resolved.message,
+    };
+  }
+
+  const result = spawnSync(resolved.path, args, {
     cwd: process.cwd(),
-    env: { ...process.env, DOPPLER_NO_UPDATE_CHECK: "1" },
+    env: dopplerChildEnv(process.env),
     encoding: "utf8",
     timeout: stats.timeoutMs,
     maxBuffer: 1024 * 1024 * 8,
@@ -478,6 +519,62 @@ function updateCommandStats(stats: DopplerStats, result: DopplerCommandResult): 
   stats.cliAvailable = result.error !== "missing_cli";
   stats.exitCode = result.exitCode;
   stats.timedOut ||= result.timedOut;
+  if (result.error === "unsafe_command") stats.unsafeCommandReason = result.message;
+}
+
+function resolveDopplerCommand(
+  command: string,
+): { ok: true; path: string } | { ok: false; error: "missing_cli" | "unsafe_command"; message: string } {
+  const executable = findExecutable(command, { pathEnv: process.env.PATH ?? "" });
+  if (!executable) return { ok: false, error: "missing_cli", message: "doppler executable not found" };
+
+  const unsafe = unsafeExecutableReason(executable);
+  if (unsafe) return { ok: false, error: "unsafe_command", message: unsafe };
+  return { ok: true, path: executable };
+}
+
+function unsafeExecutableReason(executable: string): string | undefined {
+  const resolvedExecutable = realpathSync(resolve(executable));
+  const cwd = realpathSync(resolve(process.cwd()));
+  const rel = relative(cwd, resolvedExecutable);
+  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+    return `resolved inside the current working tree (${rel})`;
+  }
+
+  const executableDir = dirname(resolvedExecutable);
+  try {
+    const stat = statSync(executableDir);
+    if ((stat.mode & 0o002) !== 0) return `resolved from world-writable directory (${executableDir})`;
+  } catch {
+    return `could not stat executable directory (${executableDir})`;
+  }
+  return undefined;
+}
+
+function dopplerChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { DOPPLER_NO_UPDATE_CHECK: "1" };
+  for (const key of [
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "PATH",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "APPDATA",
+    "LOCALAPPDATA",
+  ]) {
+    if (env[key]) out[key] = env[key];
+  }
+
+  for (const [key, value] of Object.entries(env)) {
+    if (!value) continue;
+    if (key.startsWith("DOPPLER_") || /^(HTTPS?|ALL)_PROXY$/i.test(key) || /^NO_PROXY$/i.test(key)) {
+      out[key] = value;
+    }
+  }
+  return out;
 }
 
 function secretsDownloadArgs(stats: DopplerStats, target: DopplerTarget): string[] {

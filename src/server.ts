@@ -4,7 +4,7 @@ import { argv } from "node:process";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { loadConfig, resolveTarget } from "./config.js";
+import { loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
 import { ProtectionEngine } from "./engine.js";
 import { logRequest, logResponse, runDir } from "./log.js";
 import { type FictaPlugin, type PluginDiscovery, registryDiscoveryLines } from "./plugins/index.js";
@@ -53,6 +53,10 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     }
 
     const { url: target, note: route } = resolveTarget(cfg, url.pathname, searchToSend, c.req.raw.headers);
+    const upstreamIssue = upstreamPolicyIssue(cfg, target);
+    if (upstreamIssue) {
+      return c.json({ error: { type: "ficta_upstream_policy", message: upstreamIssue } }, 403);
+    }
 
     const headers = new Headers(c.req.raw.headers);
     headers.delete("host");

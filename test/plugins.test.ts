@@ -23,6 +23,7 @@ const ENV_KEYS = [
   "FICTA_REGISTRY_DOPPLER_PROJECT",
   "FICTA_REGISTRY_DOPPLER_TIMEOUT_MS",
   "TEST_DOPPLER_API_KEY",
+  "ANTHROPIC_API_KEY",
   "PATH",
 ] as const;
 
@@ -134,6 +135,85 @@ describe("registry plugin discovery", () => {
     expect(registrySetupSources().find((source) => source.id === "doppler-cli/secrets-download")?.defaultEnabled).toBe(
       true,
     );
+  });
+
+  it("reports env-file read errors without dropping other registry sources", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ficta-env-dir-"));
+    process.env.FICTA_REGISTRY_ENV_FILE_PATHS = dir;
+    process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "1";
+    process.env.FICTA_REGISTRY_PROCESS_ENV_MODE = "secret-ish";
+    process.env.TEST_DOPPLER_API_KEY = "process-env-fixture-secret-value";
+
+    const snapshot = loadPluginRegistry();
+    const envFile = snapshot.discoveries.find((d) => d.id === "known-env-values/env-file");
+
+    expect(snapshot.values.some((v) => v.name === "TEST_DOPPLER_API_KEY")).toBe(true);
+    expect(envFile?.status).toBe("error");
+    expect(envFile?.message).toContain("could not read");
+  });
+
+  it("parses common dotenv double-quoted escapes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ficta-env-file-"));
+    const envFile = join(dir, ".env");
+    writeFileSync(envFile, 'PRIVATE_KEY="line1\\nline2"\n', { mode: 0o600 });
+    process.env.FICTA_REGISTRY_ENV_FILE_PATHS = envFile;
+    process.env.FICTA_REGISTRY_MIN_LEN = "4";
+
+    const snapshot = loadPluginRegistry();
+
+    expect(snapshot.values.find((v) => v.name === "PRIVATE_KEY")?.value).toBe("line1\nline2");
+  });
+
+  it("refuses Doppler commands resolved inside the current working tree", () => {
+    const cwd = process.cwd();
+    const dir = mkdtempSync(join(tmpdir(), "ficta-doppler-cwd-"));
+    const command = join(dir, "doppler");
+    writeFileSync(command, "#!/bin/sh\nprintf '%s\\n' '{\"DOPPLER_SECRET\":\"should-not-load\"}'\n", { mode: 0o700 });
+    chmodSync(command, 0o700);
+
+    try {
+      process.chdir(dir);
+      process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+      process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "1";
+      process.env.FICTA_REGISTRY_DOPPLER_COMMAND = command;
+
+      const snapshot = loadPluginRegistry();
+      const doppler = snapshot.discoveries.find((d) => d.id === "doppler-cli/secrets-download");
+
+      expect(snapshot.values.some((v) => v.value === "should-not-load")).toBe(false);
+      expect(doppler?.status).toBe("error");
+      expect(doppler?.message).toContain("untrusted Doppler command");
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it("runs Doppler with a minimal child environment", () => {
+    const secret = "doppler-provider-fixture-secret-value";
+    const bin = mkdtempSync(join(tmpdir(), "ficta-doppler-env-test-"));
+    const command = join(bin, "doppler");
+    writeFileSync(
+      command,
+      `#!/bin/sh
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  printf '%s\n' '{"LEAK":"provider-key-was-forwarded"}'
+else
+  printf '%s\n' '{"DOPPLER_SECRET":"${secret}"}'
+fi
+`,
+      { mode: 0o700 },
+    );
+    chmodSync(command, 0o700);
+
+    process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+    process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "1";
+    process.env.FICTA_REGISTRY_DOPPLER_COMMAND = command;
+    process.env.ANTHROPIC_API_KEY = "provider-key-should-not-reach-doppler";
+
+    const snapshot = loadPluginRegistry();
+
+    expect(snapshot.values.some((v) => v.name === "DOPPLER_SECRET" && v.value === secret)).toBe(true);
+    expect(snapshot.values.some((v) => v.name === "LEAK")).toBe(false);
   });
 
   it("loads Doppler CLI secrets at startup before the agent launches", () => {

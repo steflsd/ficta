@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync } from "node:fs";
-import { loadConfig } from "./config.js";
+import { configuredUpstreamPolicyIssues, loadConfig } from "./config.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
 import { globalDisablePath, isGloballyDisabled } from "./global-disable.js";
 import { defaultShimDir, findExecutable } from "./install.js";
@@ -30,6 +30,7 @@ export interface DoctorReport {
     disablePath: string;
     upstreams: { anthropic: string; openai: string; chatgpt: string };
     forcedUpstream?: string;
+    allowCustomUpstream: boolean;
   };
   registry: {
     protectedValues: number;
@@ -80,12 +81,26 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
     });
   }
 
+  if (process.env.FICTA_REQUIRE_REGISTRY === "1") {
+    for (const discovery of registry.discoveries) {
+      if (discovery.status === "error") {
+        issues.push({
+          severity: "error",
+          message: `registry source ${discovery.label} reported an error in strict mode`,
+        });
+      }
+    }
+  }
+
   if (globallyDisabled) {
     issues.push({ severity: "warning", message: "ficta is globally disabled; run `ficta enable` to re-enable shims" });
   }
 
   if (!cfg.failClosed) {
     issues.push({ severity: "warning", message: "FICTA_FAIL_CLOSED=0 is set; leaks would be warned, not blocked" });
+  }
+  for (const upstreamIssue of configuredUpstreamPolicyIssues(cfg)) {
+    issues.push({ severity: "error", message: upstreamIssue });
   }
   if (cfg.logBodies) {
     issues.push({ severity: "warning", message: "FICTA_LOG_BODIES=1 is set; raw model bodies may be written to disk" });
@@ -117,6 +132,7 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
       disablePath: globalDisablePath(),
       upstreams: cfg.upstreams,
       forcedUpstream: cfg.forcedUpstream,
+      allowCustomUpstream: cfg.allowCustomUpstream,
     },
     registry: {
       protectedValues: registry.values.length,
@@ -182,6 +198,7 @@ export function renderDoctorReport(report: DoctorReport): string {
 
   lines.push("upstreams");
   if (report.config.forcedUpstream) lines.push(`  ! forced upstream: ${report.config.forcedUpstream}`);
+  if (report.config.allowCustomUpstream) lines.push("  ! custom upstreams: allowed by FICTA_ALLOW_CUSTOM_UPSTREAM=1");
   lines.push(`  anthropic: ${report.config.upstreams.anthropic}`);
   lines.push(`  openai:    ${report.config.upstreams.openai}`);
   lines.push(`  chatgpt:   ${report.config.upstreams.chatgpt}`);

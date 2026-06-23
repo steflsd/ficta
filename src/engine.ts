@@ -83,7 +83,13 @@ export class ProtectionEngine {
     if (!text) return 0;
     let added = 0;
     for (const plugin of this.plugins) {
-      const detected = plugin.detectText?.(text, ctx) ?? [];
+      let detected: readonly ProtectedValue[];
+      try {
+        detected = plugin.detectText?.(text, ctx) ?? [];
+      } catch {
+        // Detector plugins are best-effort and must not take down the exact-match proxy path.
+        continue;
+      }
       if (detected.length === 0) continue;
       added += this.vault.register(detected.map((value) => ({ ...value, plugin: value.plugin ?? plugin.name })));
     }

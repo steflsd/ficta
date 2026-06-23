@@ -92,16 +92,35 @@ export async function logResponse(args: {
   body?: string;
 }): Promise<void> {
   let raw = args.body ?? "";
+  let bodyTruncated = false;
   if (args.stream) {
     const reader = args.stream.getReader();
     const decoder = new TextDecoder();
+    let loggedBytes = byteLen(raw);
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+
+        const remaining = cfg.logMaxBytes - loggedBytes;
+        if (remaining <= 0) {
+          bodyTruncated = true;
+          await reader.cancel();
+          break;
+        }
+
+        if (value.byteLength > remaining) {
+          raw += decoder.decode(value.slice(0, remaining));
+          loggedBytes += remaining;
+          bodyTruncated = true;
+          await reader.cancel();
+          break;
+        }
+
         raw += decoder.decode(value, { stream: true });
+        loggedBytes += value.byteLength;
       }
-      raw += decoder.decode();
+      if (!bodyTruncated) raw += decoder.decode();
     } catch {
       /* client may abort — log what we got */
     } finally {
@@ -155,6 +174,7 @@ export async function logResponse(args: {
     contentType: args.contentType,
     bodyBytes: byteLen(raw),
     bodyLogged: cfg.logBodies,
+    bodyTruncated,
     registeredValues: registeredValueCount(),
     summary: isSse ? { sse: sseMeta(raw) } : parseOk ? responseMeta(wire, parsed) : undefined,
     inspection,

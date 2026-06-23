@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, upstreamPolicyIssue } from "../src/config.js";
 import { configPath, readUserConfig, writeUserConfig } from "../src/user-config.js";
 
 const originalLogBodies = process.env.FICTA_LOG_BODIES;
@@ -35,6 +35,19 @@ describe("config hardening", () => {
     expect(configPath()).toBe(join(homedir(), "custom-ficta", "config.toml"));
   });
 
+  it("blocks non-default upstreams unless explicitly allowed", () => {
+    const cfg = { ...loadConfig(), allowCustomUpstream: false };
+
+    expect(upstreamPolicyIssue(cfg, "https://attacker.example/v1/messages")).toContain("FICTA_ALLOW_CUSTOM_UPSTREAM=1");
+    expect(upstreamPolicyIssue(cfg, "http://127.0.0.1:9000/v1/messages")).toBeUndefined();
+    expect(upstreamPolicyIssue({ ...cfg, allowCustomUpstream: true }, "http://attacker.example/v1/messages")).toContain(
+      "must use https",
+    );
+    expect(
+      upstreamPolicyIssue({ ...cfg, allowCustomUpstream: true }, "https://trusted.example/v1/messages"),
+    ).toBeUndefined();
+  });
+
   it("persists user config as TOML and reads it as effective settings", () => {
     const dir = mkdtempSync(join(tmpdir(), "ficta-config-"));
     const path = join(dir, "config.toml");
@@ -48,6 +61,8 @@ describe("config hardening", () => {
           FICTA_REGISTRY_MIN_LEN: "12",
           FICTA_REQUIRE_REGISTRY: "1",
           FICTA_LOG_BODIES: "0",
+          FICTA_LOG_MAX_BYTES: "12345",
+          FICTA_ALLOW_CUSTOM_UPSTREAM: "1",
         },
         path,
       );
@@ -62,6 +77,8 @@ describe("config hardening", () => {
         FICTA_REGISTRY_MIN_LEN: "12",
         FICTA_REQUIRE_REGISTRY: "1",
         FICTA_LOG_BODIES: "0",
+        FICTA_LOG_MAX_BYTES: "12345",
+        FICTA_ALLOW_CUSTOM_UPSTREAM: "1",
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

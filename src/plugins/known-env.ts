@@ -5,6 +5,7 @@ export interface KnownEnvFileStat {
   file: string;
   exists: boolean;
   loaded: number;
+  error?: string;
 }
 
 export type KnownEnvProcessMode = "disabled" | "secret-ish" | "all";
@@ -19,6 +20,7 @@ export interface KnownEnvStats {
   skippedDuplicate: number;
   filesRead: number;
   filesMissing: number;
+  filesErrored: number;
   envFileSetting: string;
   envFilesEnabled: boolean;
   envFiles: KnownEnvFileStat[];
@@ -112,8 +114,16 @@ export function loadKnownEnvValues(): ProtectedValue[] {
         stats.filesMissing++;
         continue;
       }
+      let text: string;
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        stats.filesErrored++;
+        fileStat.error = "read error";
+        continue;
+      }
       stats.filesRead++;
-      for (const { name, value } of parseEnvFile(readFileSync(file, "utf8"))) {
+      for (const { name, value } of parseEnvFile(text)) {
         if (add(name, value, "env-file")) fileStat.loaded++;
       }
     }
@@ -204,7 +214,31 @@ function envFileDiscovery(stats: KnownEnvStats): PluginDiscovery {
     };
   }
 
-  const details = stats.envFiles.map((f) => `${f.file}: ${f.exists ? `${f.loaded} loaded` : "not found"}`);
+  const details = stats.envFiles.map(
+    (f) => `${f.file}: ${f.error ? f.error : f.exists ? `${f.loaded} loaded` : "not found"}`,
+  );
+  if (stats.filesErrored > 0) {
+    if (stats.loadedFromEnvFiles > 0) {
+      return {
+        id: `${PLUGIN_NAME}/env-file`,
+        plugin: PLUGIN_NAME,
+        label: "env files",
+        status: "error",
+        valueCount: stats.loadedFromEnvFiles,
+        message: `loaded ${stats.loadedFromEnvFiles} value(s), but could not read ${stats.filesErrored} env file(s)`,
+        details,
+      };
+    }
+    return {
+      id: `${PLUGIN_NAME}/env-file`,
+      plugin: PLUGIN_NAME,
+      label: "env files",
+      status: "error",
+      valueCount: 0,
+      message: `could not read ${stats.filesErrored} env file(s)`,
+      details,
+    };
+  }
   if (stats.loadedFromEnvFiles > 0) {
     return {
       id: `${PLUGIN_NAME}/env-file`,
@@ -283,6 +317,7 @@ function emptyStats(): KnownEnvStats {
     skippedDuplicate: 0,
     filesRead: 0,
     filesMissing: 0,
+    filesErrored: 0,
     envFileSetting: registryEnvFileSetting(),
     envFilesEnabled: registryEnvFilesEnabled(),
     envFiles: [],
@@ -360,6 +395,7 @@ function parseEnvFile(text: string): Array<{ name: string; value: string }> {
       // If the quote never closes, keep the accumulated content after the opener rather than
       // silently registering only the first physical line.
       value = close === -1 ? quoted.slice(1) : quoted.slice(1, close);
+      if (quote === '"') value = unescapeDoubleQuotedEnv(value);
     } else {
       value = stripComment(rawValue).trim();
     }
@@ -367,6 +403,21 @@ function parseEnvFile(text: string): Array<{ name: string; value: string }> {
     out.push({ name, value });
   }
   return out;
+}
+
+function unescapeDoubleQuotedEnv(value: string): string {
+  return value.replace(/\\([nrt"\\$])/g, (_match, escaped: string) => {
+    switch (escaped) {
+      case "n":
+        return "\n";
+      case "r":
+        return "\r";
+      case "t":
+        return "\t";
+      default:
+        return escaped;
+    }
+  });
 }
 
 function closingQuoteIndex(value: string, quote: string): number {
