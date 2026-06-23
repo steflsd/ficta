@@ -24,7 +24,9 @@ ficta setup   # configure ~/.ficta/config.toml and optionally install shims
 ficta install
 ```
 
-From a source checkout, use `pnpm ficta setup` / `pnpm ficta install` instead.
+From a source checkout, use `pnpm ficta setup` / `pnpm ficta install` instead. If you want the bare
+`ficta` command to point at your checkout while developing, run `pnpm add -g "$(pwd)"` from the repo;
+`ficta --version` will show a `+dev` suffix when running from source.
 
 Before launching an agent, sanity-check registry loading and routing:
 

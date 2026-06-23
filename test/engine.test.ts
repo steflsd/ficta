@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { ProtectionEngine } from "../src/engine.js";
-import type { FictaPlugin } from "../src/plugins/index.js";
+import type { DetectorPlugin, RegistrySourcePlugin } from "../src/plugins/index.js";
 
 const SECRET = "test-secret-value-12345";
 const EMAIL = "alice@example.com";
 
 describe("protection engine plugins", () => {
   it("loads exact registry values from a plugin and round-trips them", () => {
-    const plugin: FictaPlugin = {
+    const plugin: RegistrySourcePlugin = {
+      kind: "registry-source",
       name: "fixture-registry",
+      config: { bindings: [], sections: [], envDefaults: {} },
+      setup: { registrySources: () => [] },
+      discover: () => [],
       loadValues: () => [
         { name: "FIXTURE_SECRET", value: SECRET, source: "fixture", kind: "secret", confidence: "exact" },
       ],
@@ -27,7 +31,8 @@ describe("protection engine plugins", () => {
   });
 
   it("supports request-time detector plugins for future PII-style values", () => {
-    const piiPlugin: FictaPlugin = {
+    const piiPlugin: DetectorPlugin = {
+      kind: "detector",
       name: "fixture-pii-detector",
       detectText: (text) => {
         const emails = new Set(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []);

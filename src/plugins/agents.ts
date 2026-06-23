@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentIntegration, FictaPlugin } from "./types.js";
+import type { AgentIntegration, AgentIntegrationPlugin } from "./types.js";
 
 export const claudeAgent: AgentIntegration = {
   id: "builtin/claude",
@@ -67,7 +67,8 @@ export const piAgent: AgentIntegration = {
   },
 };
 
-export const builtInAgentPlugin: FictaPlugin = {
+export const builtInAgentPlugin: AgentIntegrationPlugin = {
+  kind: "agent-integration",
   name: "builtin-agent-integrations",
   description: "Launch adapters for supported coding agents",
   agents: [claudeAgent, codexAgent, piAgent],

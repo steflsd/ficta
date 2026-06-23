@@ -2,7 +2,13 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadPluginRegistry, resetPluginCachesForTests } from "../src/plugins/index.js";
+import {
+  loadPluginRegistry,
+  registrySetupDefaults,
+  registrySetupSources,
+  resetPluginCachesForTests,
+  validatePluginBoundaries,
+} from "../src/plugins/index.js";
 
 const ENV_KEYS = [
   "FICTA_CONFIG_FILE",
@@ -67,6 +73,67 @@ describe("registry plugin discovery", () => {
 
     expect(snapshot.values.some((v) => v.name === "AWS_KEY")).toBe(false);
     expect(snapshot.discoveries.find((d) => d.id === "known-env-values/env-file")?.status).toBe("disabled");
+  });
+
+  it("keeps known-env setup/default metadata owned by the known-env registry plugin", () => {
+    process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
+
+    const envFileSource = registrySetupSources().find((source) => source.id === "known-env-values/env-file");
+
+    expect(envFileSource?.defaultEnabled).toBe(true);
+    expect(envFileSource?.label).toContain("found test/fixtures/secrets.env");
+    expect(registrySetupDefaults()).toMatchObject({
+      FICTA_REGISTRY_PROCESS_ENV_ENABLED: "1",
+      FICTA_REGISTRY_PROCESS_ENV_MODE: "secret-ish",
+    });
+
+    process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+    expect(registrySetupSources().find((source) => source.id === "known-env-values/env-file")?.defaultEnabled).toBe(
+      false,
+    );
+  });
+
+  it("rejects registry-source hooks that bypass the plugin boundary contract", () => {
+    expect(() => validatePluginBoundaries([{ name: "bad-registry", loadValues: () => [] } as any])).toThrow(
+      /kind="registry-source"/,
+    );
+
+    expect(() =>
+      validatePluginBoundaries([
+        {
+          kind: "registry-source",
+          name: "bad-registry",
+          config: { bindings: [], sections: [], envDefaults: {} },
+          discover: () => [],
+          loadValues: () => [],
+          setup: {},
+        } as any,
+      ]),
+    ).toThrow(/setup\.registrySources/);
+  });
+
+  it("keeps Doppler setup defaults owned by the Doppler registry plugin", () => {
+    delete process.env.FICTA_REGISTRY_DOPPLER_ENABLED;
+    process.env.PATH = "";
+    expect(registrySetupSources().find((source) => source.id === "doppler-cli/secrets-download")?.defaultEnabled).toBe(
+      false,
+    );
+
+    process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "1";
+    expect(registrySetupSources().find((source) => source.id === "doppler-cli/secrets-download")?.defaultEnabled).toBe(
+      true,
+    );
+
+    delete process.env.FICTA_REGISTRY_DOPPLER_ENABLED;
+    const bin = mkdtempSync(join(tmpdir(), "ficta-doppler-path-test-"));
+    const command = join(bin, "doppler");
+    writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    chmodSync(command, 0o700);
+    process.env.PATH = bin;
+
+    expect(registrySetupSources().find((source) => source.id === "doppler-cli/secrets-download")?.defaultEnabled).toBe(
+      true,
+    );
   });
 
   it("loads Doppler CLI secrets at startup before the agent launches", () => {

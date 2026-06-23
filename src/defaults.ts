@@ -1,15 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pluginEnvDefaults } from "./plugins/index.js";
 
-export const FICTA_DEFAULTS = {
-  FICTA_REGISTRY_ENV_FILE_ENABLED: "1",
-  FICTA_REGISTRY_ENV_FILE_PATHS: ".env:.env.local",
-  FICTA_REGISTRY_DOPPLER_ENABLED: "1",
-  FICTA_REGISTRY_DOPPLER_CONFIGS: "current",
-  FICTA_REGISTRY_DOPPLER_PROJECT: "",
-  FICTA_REGISTRY_DOPPLER_TIMEOUT_MS: "5000",
-  FICTA_REGISTRY_PROCESS_ENV_ENABLED: "1",
-  FICTA_REGISTRY_PROCESS_ENV_MODE: "secret-ish",
+const CORE_DEFAULTS = {
   FICTA_REGISTRY_MIN_LEN: "8",
   FICTA_REQUIRE_REGISTRY: "0",
   FICTA_FAIL_CLOSED: "1",
@@ -17,7 +10,10 @@ export const FICTA_DEFAULTS = {
   FICTA_LOG_BODIES: "0",
 } as const;
 
-export type FictaDefaultName = keyof typeof FICTA_DEFAULTS;
+export const FICTA_DEFAULTS = {
+  ...pluginEnvDefaults(),
+  ...CORE_DEFAULTS,
+} as Readonly<Record<string, string>> & typeof CORE_DEFAULTS;
 
 export function defaultLogDir(): string {
   return join(homedir(), ".ficta", "logs");

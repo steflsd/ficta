@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
-import type { FictaPlugin, PluginDiscovery, ProtectedValue } from "./types.js";
+import { findExecutable } from "../install.js";
+import type { PluginDiscovery, ProtectedValue, RegistrySetupSource, RegistrySourcePlugin } from "./types.js";
 
 export type DopplerRegistryMode = "auto" | "enabled" | "disabled";
+type DopplerSetupConfigMode = "current" | "all";
 
 export interface DopplerConfigStat {
   label: string;
@@ -52,9 +54,29 @@ let cachedKey: string | undefined;
 let cachedValues: ProtectedValue[] | undefined;
 let cachedStats: DopplerStats | undefined;
 
-export const dopplerPlugin: FictaPlugin = {
+export const dopplerPlugin: RegistrySourcePlugin = {
+  kind: "registry-source",
   name: PLUGIN_NAME,
   description: "Loads exact secret values from Doppler at startup via the Doppler CLI",
+  config: {
+    envDefaults: {
+      FICTA_REGISTRY_DOPPLER_ENABLED: "1",
+      FICTA_REGISTRY_DOPPLER_CONFIGS: DEFAULT_CONFIG_SETTING,
+      FICTA_REGISTRY_DOPPLER_PROJECT: "",
+      FICTA_REGISTRY_DOPPLER_TIMEOUT_MS: String(DEFAULT_TIMEOUT_MS),
+    },
+    bindings: [
+      { env: "FICTA_REGISTRY_DOPPLER_ENABLED", path: ["registry", "doppler", "enabled"], kind: "boolean" },
+      { env: "FICTA_REGISTRY_DOPPLER_CONFIGS", path: ["registry", "doppler", "configs"], kind: "string-array-comma" },
+      { env: "FICTA_REGISTRY_DOPPLER_PROJECT", path: ["registry", "doppler", "project"], kind: "string" },
+      { env: "FICTA_REGISTRY_DOPPLER_COMMAND", path: ["registry", "doppler", "command"], kind: "string" },
+      { env: "FICTA_REGISTRY_DOPPLER_TIMEOUT_MS", path: ["registry", "doppler", "timeout_ms"], kind: "number" },
+    ],
+    sections: [{ path: ["registry", "doppler"], keys: ["enabled", "configs", "project", "command", "timeout_ms"] }],
+  },
+  setup: {
+    registrySources: (ctx) => [dopplerSetupSource(ctx.env)],
+  },
   discover: discoverDopplerSource,
   loadValues: loadDopplerValues,
 };
@@ -145,6 +167,48 @@ export function resetDopplerPluginCacheForTests(): void {
   cachedKey = undefined;
   cachedValues = undefined;
   cachedStats = undefined;
+}
+
+function dopplerSetupSource(env: NodeJS.ProcessEnv): RegistrySetupSource {
+  const command = env.FICTA_REGISTRY_DOPPLER_COMMAND || DEFAULT_COMMAND;
+  const executable = findExecutable(command, { pathEnv: env.PATH ?? "" });
+  const label = executable
+    ? `Doppler CLI — detected at ${executable}; load Doppler secrets before the agent starts`
+    : `Doppler CLI — ${command} not found on PATH`;
+
+  return {
+    id: `${PLUGIN_NAME}/secrets-download`,
+    label,
+    defaultEnabled: setupEnabledDefault(env.FICTA_REGISTRY_DOPPLER_ENABLED, Boolean(executable)),
+    async enabledValues(ctx) {
+      const mode = await ctx.promptSelect<DopplerSetupConfigMode>(
+        "Default Doppler coverage for each ficta launch",
+        [
+          { value: "current", label: "active config resolved by Doppler for the current directory" },
+          { value: "all", label: "all configs in the resolved Doppler project" },
+        ],
+        configModeDefault(ctx.env.FICTA_REGISTRY_DOPPLER_CONFIGS),
+      );
+      const project = await ctx.promptText(
+        "Doppler project override (advanced, global; optional)",
+        ctx.env.FICTA_REGISTRY_DOPPLER_PROJECT ?? "",
+        "Leave blank to let Doppler resolve the active project for each launch directory.",
+        true,
+      );
+      return {
+        FICTA_REGISTRY_DOPPLER_ENABLED: "1",
+        FICTA_REGISTRY_DOPPLER_CONFIGS: mode,
+        FICTA_REGISTRY_DOPPLER_PROJECT: project,
+      };
+    },
+    disabledValues(ctx) {
+      return {
+        FICTA_REGISTRY_DOPPLER_ENABLED: "0",
+        FICTA_REGISTRY_DOPPLER_CONFIGS: DEFAULT_CONFIG_SETTING,
+        FICTA_REGISTRY_DOPPLER_PROJECT: ctx.env.FICTA_REGISTRY_DOPPLER_PROJECT ?? "",
+      };
+    },
+  };
 }
 
 function resolveDopplerTargets(
@@ -328,10 +392,21 @@ function emptyStats(): DopplerStats {
   };
 }
 
+function setupEnabledDefault(value: string | undefined, fallback: boolean): boolean {
+  const normalized = value?.trim().toLowerCase();
+  if (["0", "false", "off", "disabled", "no"].includes(normalized ?? "")) return false;
+  if (["1", "true", "on", "enabled", "yes"].includes(normalized ?? "")) return true;
+  return fallback;
+}
+
+function configModeDefault(value: string | undefined): DopplerSetupConfigMode {
+  return value === "all" ? "all" : "current";
+}
+
 function registryDopplerMode(): DopplerRegistryMode {
-  const raw = (process.env.FICTA_REGISTRY_DOPPLER_ENABLED ?? "1").toLowerCase();
-  if (raw === "0" || raw === "false" || raw === "off" || raw === "disabled") return "disabled";
-  if (raw === "1" || raw === "true" || raw === "on" || raw === "enabled") return "enabled";
+  const raw = (process.env.FICTA_REGISTRY_DOPPLER_ENABLED ?? "1").trim().toLowerCase();
+  if (["0", "false", "off", "disabled", "no"].includes(raw)) return "disabled";
+  if (["1", "true", "on", "enabled", "yes"].includes(raw)) return "enabled";
   return "auto";
 }
 

@@ -2,69 +2,34 @@ import { randomBytes } from "node:crypto";
 import { confirm, intro, isCancel, multiselect, note, outro, select, text } from "@clack/prompts";
 import { defaultLogDir, FICTA_DEFAULTS } from "./defaults.js";
 import { installShims } from "./install.js";
+import { registrySetupDefaults, registrySetupSources } from "./plugins/index.js";
 import { configPath, readUserConfig, writeUserConfig } from "./user-config.js";
 
 export interface SetupOptions {
   supportedAgents: readonly string[];
 }
 
-type RegistrySource = "doppler" | "env-file";
-type DopplerConfigMode = "current" | "explicit" | "all";
-
 export async function runSetup(opts: SetupOptions): Promise<void> {
   intro("ficta setup");
 
-  const sources = await promptMultiselect<RegistrySource>(
-    "Which registry sources should ficta enable?",
-    [
-      { value: "doppler", label: "Doppler CLI — load Doppler secrets before the agent starts" },
-      { value: "env-file", label: ".env files — load project env files" },
-    ],
-    defaultSources(),
-  );
-  const dopplerEnabled = sources.includes("doppler");
-  const envFileEnabled = sources.includes("env-file");
+  const registrySources = registrySetupSources({ env: process.env });
+  const selectedSourceIds =
+    registrySources.length === 0
+      ? []
+      : await promptMultiselect<string>(
+          "Which registry sources should ficta enable?",
+          registrySources.map((source) => ({ value: source.id, label: source.label })),
+          registrySources.filter((source) => source.defaultEnabled).map((source) => source.id),
+        );
 
-  let dopplerConfigMode: DopplerConfigMode = "current";
-  let dopplerConfigs = "current";
-  let dopplerProject = "";
-  if (dopplerEnabled) {
-    dopplerConfigMode = await promptSelect<DopplerConfigMode>(
-      "Which Doppler configs should ficta preload?",
-      [
-        { value: "current", label: "current active config only" },
-        { value: "explicit", label: "explicit configs, e.g. dev,staging,prod" },
-        { value: "all", label: "all configs in the project" },
-      ],
-      configModeDefault(process.env.FICTA_REGISTRY_DOPPLER_CONFIGS),
-    );
-
-    if (dopplerConfigMode === "explicit") {
-      dopplerConfigs = await promptText(
-        "Doppler configs to preload",
-        process.env.FICTA_REGISTRY_DOPPLER_CONFIGS && process.env.FICTA_REGISTRY_DOPPLER_CONFIGS !== "all"
-          ? process.env.FICTA_REGISTRY_DOPPLER_CONFIGS
-          : "dev,prod",
-        "Comma-separated config names. Use project/config for cross-project entries.",
-      );
-    } else {
-      dopplerConfigs = dopplerConfigMode;
-    }
-
-    dopplerProject = await promptText(
-      "Doppler project override (optional)",
-      process.env.FICTA_REGISTRY_DOPPLER_PROJECT ?? "",
-      "Leave blank to let the Doppler CLI resolve the active project for this repo.",
-      true,
-    );
-  }
-
-  let envFilePaths = process.env.FICTA_REGISTRY_ENV_FILE_PATHS ?? FICTA_DEFAULTS.FICTA_REGISTRY_ENV_FILE_PATHS;
-  if (envFileEnabled) {
-    envFilePaths = await promptText(
-      "Env files to load",
-      envFilePaths,
-      "Colon-separated paths, relative to the repo where the agent starts.",
+  const registryValues = registrySetupDefaults({ env: process.env });
+  const setupPromptContext = { env: process.env, promptSelect, promptText };
+  for (const source of registrySources) {
+    Object.assign(
+      registryValues,
+      selectedSourceIds.includes(source.id)
+        ? await source.enabledValues(setupPromptContext)
+        : await source.disabledValues({ env: process.env }),
     );
   }
 
@@ -86,13 +51,7 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
   );
 
   const values: Record<string, string> = {
-    FICTA_REGISTRY_DOPPLER_ENABLED: dopplerEnabled ? "1" : "0",
-    FICTA_REGISTRY_DOPPLER_CONFIGS: dopplerConfigs,
-    FICTA_REGISTRY_DOPPLER_PROJECT: dopplerProject,
-    FICTA_REGISTRY_ENV_FILE_ENABLED: envFileEnabled ? "1" : "0",
-    FICTA_REGISTRY_ENV_FILE_PATHS: envFilePaths,
-    FICTA_REGISTRY_PROCESS_ENV_ENABLED: FICTA_DEFAULTS.FICTA_REGISTRY_PROCESS_ENV_ENABLED,
-    FICTA_REGISTRY_PROCESS_ENV_MODE: FICTA_DEFAULTS.FICTA_REGISTRY_PROCESS_ENV_MODE,
+    ...registryValues,
     FICTA_REGISTRY_MIN_LEN: minLen,
     FICTA_REQUIRE_REGISTRY: FICTA_DEFAULTS.FICTA_REQUIRE_REGISTRY,
     FICTA_FAIL_CLOSED: FICTA_DEFAULTS.FICTA_FAIL_CLOSED,
@@ -181,26 +140,6 @@ async function promptConfirm(message: string, initialValue: boolean): Promise<bo
   const result = await confirm({ message, initialValue });
   if (isCancel(result)) return abortSetup();
   return Boolean(result);
-}
-
-function defaultSources(): RegistrySource[] {
-  const out: RegistrySource[] = [];
-  if (enabledDefault("FICTA_REGISTRY_DOPPLER_ENABLED", true)) out.push("doppler");
-  if (enabledDefault("FICTA_REGISTRY_ENV_FILE_ENABLED", true)) out.push("env-file");
-  return out;
-}
-
-function enabledDefault(envName: string, fallback: boolean): boolean {
-  const raw = process.env[envName];
-  if (raw === "0" || raw === "false") return false;
-  if (raw === "1" || raw === "true") return true;
-  return fallback;
-}
-
-function configModeDefault(value: string | undefined): DopplerConfigMode {
-  if (value === "all") return "all";
-  if (value && value !== "current") return "explicit";
-  return "current";
 }
 
 function setupConfigPath(): string {

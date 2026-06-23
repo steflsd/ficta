@@ -2,6 +2,9 @@
 // Starts an ephemeral redaction proxy and launches the agent pointed at it.
 // `ficta install` adds shell shims so users can keep typing `claude` / `codex` / `pi`.
 import { type ChildProcess, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sanitizeAgentEnv } from "./child-env.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
 import { isGloballyDisabled, setGlobalDisabled } from "./global-disable.js";
@@ -15,6 +18,11 @@ loadUserConfig();
 const args = process.argv.slice(2);
 const command = args[0];
 const supportedAgents = agentCommands();
+
+if (command === "-v" || command === "--version" || command === "version") {
+  process.stdout.write(`${renderVersion()}\n`);
+  process.exit(0);
+}
 
 if (command === "-h" || command === "--help" || command === undefined) {
   printHelp(command === undefined ? 2 : 0);
@@ -189,7 +197,7 @@ if (
 ) {
   process.stderr.write(
     "\n🛑 ficta found no protected values and FICTA_REQUIRE_REGISTRY=1 is set.\n" +
-      "   Add a .env/.env.local, configure Doppler, run `ficta setup`,\n" +
+      "   Add .env values, configure a registry source, run `ficta setup`,\n" +
       "   or bypass strict mode with --allow-empty / FICTA_ALLOW_EMPTY=1.\n",
   );
   proxy.close();
@@ -243,29 +251,67 @@ child.on("error", async (e) => {
 });
 
 function printHelp(exitCode: number): never {
-  const agents = supportedAgents.length > 0 ? supportedAgents.join("|") : "agent";
-  process.stderr.write(
-    "ficta — keep your registered secrets out of the LLM\n\n" +
-      "usage:\n" +
-      "  ficta setup                   configure registry sources in ~/.ficta/config.toml\n" +
-      "  ficta doctor [agent]          check config, registry sources, and agent routing\n" +
-      `  ficta install                 install ${supportedAgents.join("/")} shims into ~/.ficta/bin\n` +
-      "  ficta uninstall               remove installed shims\n" +
-      "  ficta disable                 globally bypass installed shims\n" +
-      "  ficta enable                  re-enable installed shims globally\n" +
-      `  ficta <${agents}> [args]       launch an agent through an ephemeral proxy\n\n` +
-      "agent flags:\n" +
-      "  --allow-empty                 bypass FICTA_REQUIRE_REGISTRY=1 for this run\n" +
-      "  --ficta-verbose              print detailed registry source report at startup\n\n" +
-      "env:\n" +
-      `  FICTA_DISABLE=1 ${supportedAgents[0] ?? "claude"}        bypass an installed shim once (does not persist)\n` +
-      "  FICTA_VERBOSE=1              print detailed registry source report at startup\n" +
-      "  FICTA_REQUIRE_REGISTRY=1      block agent launch when no protected values load\n" +
-      "  FICTA_REGISTRY_PROCESS_ENV_ENABLED=0  disable secret-ish process-env loading\n" +
-      "  FICTA_REGISTRY_DOPPLER_ENABLED=0      skip Doppler CLI startup loading\n" +
-      "  FICTA_REGISTRY_DOPPLER_CONFIGS=dev,prod|all  load additional Doppler configs\n",
-  );
+  const agents = supportedAgents.length > 0 ? supportedAgents.join(", ") : "agent";
+  const help = [
+    "ficta — keep your registered secrets out of the LLM",
+    "",
+    "Usage:",
+    "  ficta <command> [options]",
+    "  ficta <agent> [args...]",
+    "",
+    "Commands:",
+    renderHelpRows([
+      ["setup", "Configure registry sources in ~/.ficta/config.toml"],
+      ["doctor [agent]", "Check config, registry sources, and agent routing"],
+      ["install [--force] [--no-shell]", `Install ${supportedAgents.join("/")} shims into ~/.ficta/bin`],
+      ["uninstall [--no-shell]", "Remove installed shims"],
+      ["disable", "Globally bypass installed shims"],
+      ["enable", "Re-enable installed shims globally"],
+      ["version, --version, -v", "Print version information"],
+      ["<agent> [args...]", "Launch an agent through an ephemeral proxy"],
+    ]),
+    "",
+    "Agents:",
+    `  ${agents}`,
+    "",
+    "Agent flags:",
+    renderHelpRows([
+      ["--allow-empty", "Bypass FICTA_REQUIRE_REGISTRY=1 for this run"],
+      ["--ficta-verbose", "Print detailed registry source report at startup"],
+    ]),
+    "",
+    "Environment:",
+    renderHelpRows([
+      ["FICTA_DISABLE=1", "Bypass ficta for one agent launch"],
+      ["FICTA_VERBOSE=1", "Show detailed registry diagnostics at startup"],
+      ["FICTA_REQUIRE_REGISTRY=1", "Refuse to launch if no protected values load"],
+    ]),
+    "",
+    "Registry sources:",
+    "  Configure with `ficta setup` or ~/.ficta/config.toml.",
+  ].join("\n");
+  const stream = exitCode === 0 ? process.stdout : process.stderr;
+  stream.write(`${help}\n`);
   process.exit(exitCode);
+}
+
+function renderHelpRows(rows: Array<[string, string]>, maxWidth?: number): string {
+  const width = maxWidth ?? Math.max(...rows.map(([label]) => label.length));
+  return rows
+    .map(([label, description]) => {
+      if (label.length > width) return `  ${label}\n  ${"".padEnd(width)}  ${description}`;
+      return `  ${label.padEnd(width)}  ${description}`;
+    })
+    .join("\n");
+}
+
+function renderVersion(): string {
+  const currentFile = fileURLToPath(import.meta.url);
+  const packagePath = join(dirname(currentFile), "..", "package.json");
+  const pkg = JSON.parse(readFileSync(packagePath, "utf8")) as { version?: unknown };
+  const version = typeof pkg.version === "string" ? pkg.version : "unknown";
+  const suffix = currentFile.endsWith(join("src", "cli.ts")) ? "+dev" : "";
+  return `ficta ${version}${suffix}`;
 }
 
 function extractFictaFlags(argv: string[]): { rest: string[]; allowEmpty: boolean; verbose: boolean } {

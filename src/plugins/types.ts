@@ -1,5 +1,54 @@
 export type ProtectedValueKind = "secret" | "pii" | "custom";
 export type ProtectionConfidence = "exact" | "high" | "probabilistic";
+export type ConfigBindingKind = "boolean" | "number" | "string" | "string-array-colon" | "string-array-comma";
+
+export interface ConfigBinding {
+  env: string;
+  path: readonly string[];
+  kind: ConfigBindingKind;
+}
+
+export interface ConfigSection {
+  path: readonly string[];
+  keys: readonly string[];
+}
+
+export interface RegistrySetupDiscoveryContext {
+  env: NodeJS.ProcessEnv;
+}
+
+export interface RegistrySetupPromptContext extends RegistrySetupDiscoveryContext {
+  promptSelect<T extends string>(
+    message: string,
+    options: Array<{ value: T; label: string }>,
+    initialValue: T,
+  ): Promise<T>;
+  promptText(message: string, initialValue: string, placeholder?: string, optional?: boolean): Promise<string>;
+}
+
+export interface RegistrySetupSource {
+  id: string;
+  label: string;
+  defaultEnabled: boolean;
+  enabledValues(ctx: RegistrySetupPromptContext): Promise<Record<string, string>> | Record<string, string>;
+  disabledValues(ctx: RegistrySetupDiscoveryContext): Promise<Record<string, string>> | Record<string, string>;
+}
+
+export interface RegistryPluginConfig {
+  /** Env/TOML bindings this registry source owns. Use [] when no persistent config is needed. */
+  bindings: readonly ConfigBinding[];
+  /** TOML section render order for this registry source. Use [] when no persistent config is needed. */
+  sections: readonly ConfigSection[];
+  /** Runtime defaults this registry source owns. Use {} when no defaults are needed. */
+  envDefaults: Readonly<Record<string, string>>;
+}
+
+export interface RegistryPluginSetup {
+  /** Non-source defaults written by setup for this registry plugin, e.g. process-env mode. */
+  registryDefaults?(ctx: RegistrySetupDiscoveryContext): Record<string, string>;
+  /** Setup-visible registry sources owned by this plugin. Use [] to make deliberate non-interactive sources explicit. */
+  registrySources(ctx: RegistrySetupDiscoveryContext): readonly RegistrySetupSource[];
+}
 
 /** A concrete value ficta can reversibly surrogate. Values must never be logged. */
 export interface ProtectedValue {
@@ -83,24 +132,54 @@ export interface AgentIntegration {
   configureBypass?(ctx: AgentBypassContext): AgentLaunchPlan;
 }
 
-/**
- * Narrow plugin seam: plugins only discover/load values, detect spans, or describe agent launch
- * integration. The core vault owns replacement, fail-closed leak checks, and restore, so plugins
- * cannot bypass the privacy invariant.
- */
-export interface FictaPlugin {
+interface FictaPluginBase {
   name: string;
   description?: string;
+}
+
+/**
+ * Registry-source plugins own their config/setup metadata and may only report exact values plus
+ * safe discovery metadata. The core vault owns replacement, fail-closed leak checks, and restore.
+ */
+export interface RegistrySourcePlugin extends FictaPluginBase {
+  kind: "registry-source";
+
+  /** Built-in config metadata owned by the registry plugin, not the core config writer. */
+  config: RegistryPluginConfig;
+
+  /** Built-in setup prompts/defaults owned by the registry plugin, not the core setup flow. */
+  setup: RegistryPluginSetup;
 
   /** Safe launch-time source discovery/status, printed before the agent starts. */
-  discover?(): readonly PluginDiscovery[];
+  discover(): readonly PluginDiscovery[];
 
   /** Load exact registered values at startup (strongest exact-match layer). */
-  loadValues?(): readonly ProtectedValue[];
+  loadValues(): readonly ProtectedValue[];
 
-  /** Detect values in a request body/header before redaction (for PII/pattern plugins). */
+  /** Optional detector/agent capabilities can coexist, but the registry contract remains required. */
   detectText?(text: string, ctx: DetectTextContext): readonly ProtectedValue[];
-
-  /** Agent/client integrations that know how to point a CLI at the local ficta proxy. */
   agents?: readonly AgentIntegration[];
 }
+
+export interface DetectorPlugin extends FictaPluginBase {
+  kind: "detector";
+  detectText(text: string, ctx: DetectTextContext): readonly ProtectedValue[];
+  config?: never;
+  setup?: never;
+  discover?: never;
+  loadValues?: never;
+  agents?: never;
+}
+
+export interface AgentIntegrationPlugin extends FictaPluginBase {
+  kind: "agent-integration";
+  agents: readonly AgentIntegration[];
+  config?: never;
+  setup?: never;
+  discover?: never;
+  loadValues?: never;
+  detectText?: never;
+}
+
+/** Narrow plugin seam: a plugin must explicitly declare which capability boundary it implements. */
+export type FictaPlugin = RegistrySourcePlugin | DetectorPlugin | AgentIntegrationPlugin;

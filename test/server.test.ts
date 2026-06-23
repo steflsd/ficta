@@ -385,6 +385,7 @@ describe("proxy hardening", () => {
         port: 0,
         plugins: [
           {
+            kind: "detector",
             name: "fixture-email-detector",
             detectText: (text: string) =>
               [...new Set(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? [])].map((value) => ({

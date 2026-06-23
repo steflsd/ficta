@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { FictaPlugin, PluginDiscovery, ProtectedValue } from "./types.js";
+import type { PluginDiscovery, ProtectedValue, RegistrySetupSource, RegistrySourcePlugin } from "./types.js";
 
 export interface KnownEnvFileStat {
   file: string;
@@ -29,6 +29,9 @@ export interface KnownEnvStats {
 
 const PLUGIN_NAME = "known-env-values";
 const DEFAULT_ENV_FILE = ".env:.env.local";
+const DEFAULT_ENV_FILE_ENABLED = "1";
+const DEFAULT_PROCESS_ENV_ENABLED = "1";
+const DEFAULT_PROCESS_ENV_MODE = "secret-ish";
 const SECRETISH_ENV_NAME =
   /(KEY|TOKEN|SECRET|PASSWORD|PASS|PWD|AUTH|BEARER|DATABASE|DB_URL|URL|JWT|PRIVATE|SIGNING|STRIPE|OPENAI|ANTHROPIC|AWS|GITHUB|DOPPLER|EMAIL|PHONE|IP)/i;
 
@@ -36,9 +39,35 @@ let cachedKey: string | undefined;
 let cachedValues: ProtectedValue[] | undefined;
 let cachedStats: KnownEnvStats | undefined;
 
-export const knownEnvPlugin: FictaPlugin = {
+export const knownEnvPlugin: RegistrySourcePlugin = {
+  kind: "registry-source",
   name: PLUGIN_NAME,
   description: "Loads exact secret/PII-ish values from .env files and process env",
+  config: {
+    envDefaults: {
+      FICTA_REGISTRY_ENV_FILE_ENABLED: DEFAULT_ENV_FILE_ENABLED,
+      FICTA_REGISTRY_ENV_FILE_PATHS: DEFAULT_ENV_FILE,
+      FICTA_REGISTRY_PROCESS_ENV_ENABLED: DEFAULT_PROCESS_ENV_ENABLED,
+      FICTA_REGISTRY_PROCESS_ENV_MODE: DEFAULT_PROCESS_ENV_MODE,
+    },
+    bindings: [
+      { env: "FICTA_REGISTRY_ENV_FILE_ENABLED", path: ["registry", "env_file", "enabled"], kind: "boolean" },
+      { env: "FICTA_REGISTRY_ENV_FILE_PATHS", path: ["registry", "env_file", "paths"], kind: "string-array-colon" },
+      { env: "FICTA_REGISTRY_PROCESS_ENV_ENABLED", path: ["registry", "process_env", "enabled"], kind: "boolean" },
+      { env: "FICTA_REGISTRY_PROCESS_ENV_MODE", path: ["registry", "process_env", "mode"], kind: "string" },
+    ],
+    sections: [
+      { path: ["registry", "env_file"], keys: ["enabled", "paths"] },
+      { path: ["registry", "process_env"], keys: ["enabled", "mode"] },
+    ],
+  },
+  setup: {
+    registryDefaults: () => ({
+      FICTA_REGISTRY_PROCESS_ENV_ENABLED: DEFAULT_PROCESS_ENV_ENABLED,
+      FICTA_REGISTRY_PROCESS_ENV_MODE: DEFAULT_PROCESS_ENV_MODE,
+    }),
+    registrySources: (ctx) => [envFileSetupSource(ctx.env)],
+  },
   discover: discoverKnownEnvSources,
   loadValues: loadKnownEnvValues,
 };
@@ -129,6 +158,38 @@ export function resetKnownEnvPluginCacheForTests(): void {
   cachedKey = undefined;
   cachedValues = undefined;
   cachedStats = undefined;
+}
+
+function envFileSetupSource(env: NodeJS.ProcessEnv): RegistrySetupSource {
+  const envFilePaths = (env.FICTA_REGISTRY_ENV_FILE_PATHS ?? DEFAULT_ENV_FILE).split(":").filter(Boolean);
+  const existingEnvFiles = envFilePaths.filter((path) => existsSync(path));
+  const label =
+    existingEnvFiles.length > 0
+      ? `.env files — found ${existingEnvFiles.join(", ")}`
+      : `.env files — load project env files (${envFilePaths.join(":")})`;
+
+  return {
+    id: `${PLUGIN_NAME}/env-file`,
+    label,
+    defaultEnabled: enabled(env.FICTA_REGISTRY_ENV_FILE_ENABLED, true),
+    async enabledValues(ctx) {
+      const paths = await ctx.promptText(
+        "Env files to load",
+        ctx.env.FICTA_REGISTRY_ENV_FILE_PATHS ?? DEFAULT_ENV_FILE,
+        "Colon-separated paths, relative to the repo where the agent starts.",
+      );
+      return {
+        FICTA_REGISTRY_ENV_FILE_ENABLED: "1",
+        FICTA_REGISTRY_ENV_FILE_PATHS: paths,
+      };
+    },
+    disabledValues(ctx) {
+      return {
+        FICTA_REGISTRY_ENV_FILE_ENABLED: "0",
+        FICTA_REGISTRY_ENV_FILE_PATHS: ctx.env.FICTA_REGISTRY_ENV_FILE_PATHS ?? DEFAULT_ENV_FILE,
+      };
+    },
+  };
 }
 
 function envFileDiscovery(stats: KnownEnvStats): PluginDiscovery {
@@ -232,7 +293,7 @@ function emptyStats(): KnownEnvStats {
 }
 
 function registryEnvFilesEnabled(): boolean {
-  return enabled(process.env.FICTA_REGISTRY_ENV_FILE_ENABLED, true);
+  return enabled(process.env.FICTA_REGISTRY_ENV_FILE_ENABLED, DEFAULT_ENV_FILE_ENABLED === "1");
 }
 
 function registryEnvFileSetting(): string {
@@ -246,11 +307,11 @@ function registryMinLen(): number {
 }
 
 function registryProcessEnvEnabled(): boolean {
-  return enabled(process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED, true);
+  return enabled(process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED, DEFAULT_PROCESS_ENV_ENABLED === "1");
 }
 
 function registryProcessEnvMode(): KnownEnvProcessMode {
-  return process.env.FICTA_REGISTRY_PROCESS_ENV_MODE === "all" ? "all" : "secret-ish";
+  return process.env.FICTA_REGISTRY_PROCESS_ENV_MODE === "all" ? "all" : DEFAULT_PROCESS_ENV_MODE;
 }
 
 function cacheKey(): string {
@@ -338,8 +399,9 @@ function stripComment(value: string): string {
 }
 
 function enabled(value: string | undefined, fallback: boolean): boolean {
-  if (value === "0" || value === "false" || value === "off" || value === "disabled") return false;
-  if (value === "1" || value === "true" || value === "on" || value === "enabled") return true;
+  const normalized = value?.trim().toLowerCase();
+  if (["0", "false", "off", "disabled", "no"].includes(normalized ?? "")) return false;
+  if (["1", "true", "on", "enabled", "yes"].includes(normalized ?? "")) return true;
   return fallback;
 }
 

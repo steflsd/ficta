@@ -54,6 +54,13 @@ pnpm install
 pnpm ficta setup
 ```
 
+If you want the bare `ficta` command to point at your checkout while developing:
+
+```sh
+pnpm add -g "$(pwd)"
+ficta --version  # shows +dev from a source checkout
+```
+
 ## What ficta protects
 
 ficta's exact guarantee is intentionally narrow:

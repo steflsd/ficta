@@ -4,16 +4,17 @@ ficta separates the privacy-critical core from the places values come from.
 
 The core invariant is:
 
-> Plugins may only **report values or detections**. The core engine/vault performs replacement,
-> fail-closed leak checks, and restore.
+> Plugins may own source-specific **config/setup metadata**, but at runtime they only **report
+> values or detections**. The core engine/vault performs replacement, fail-closed leak checks, and restore.
 
 That lets us add sources like Doppler/1Password or detectors like Gitleaks without letting plugin
 code bypass the redaction boundary.
 
 ## Terminology
 
-- **Plugin** — the umbrella term for a narrow extension point inside ficta. A plugin may provide
-  one or more capabilities below, but it should only report values, detections, or launch plans.
+- **Plugin** — the umbrella term for a narrow extension point inside ficta. A plugin must explicitly
+  declare a capability boundary; registry hooks are valid only on `kind: "registry-source"` plugins
+  that also own their source-specific metadata.
 - **Registry-source plugin** — loads exact protected values at launch, such as `.env`, process env,
   Doppler, or a future secret-manager source. This is the strongest exact-match layer.
 - **Detector plugin** — inspects request text at runtime and reports values to protect. A PII
@@ -40,30 +41,31 @@ Today a plugin can provide any of these capabilities:
 3. **Agent integration** — how to launch a client through the ephemeral ficta proxy (`claude`,
    `codex`, `pi`, later `opencode`, etc.).
 
-The TypeScript shape is intentionally small:
+The TypeScript shape makes the registry boundary explicit:
 
 ```ts
-interface FictaPlugin {
+type FictaPlugin = RegistrySourcePlugin | DetectorPlugin | AgentIntegrationPlugin;
+
+interface RegistrySourcePlugin {
+  kind: "registry-source";
   name: string;
-  description?: string;
 
-  // Safe launch-time status. Counts/paths/instructions only; never values.
-  discover?(): readonly PluginDiscovery[];
+  // Required: each registry source owns its TOML/env/default metadata and setup UX.
+  config: RegistryPluginConfig;
+  setup: RegistryPluginSetup;
 
-  // Exact registered values loaded at startup.
-  loadValues?(): readonly ProtectedValue[];
-
-  // Optional request-time detector values.
-  detectText?(text: string, ctx: DetectTextContext): readonly ProtectedValue[];
-
-  // Optional agent/client launch adapters.
-  agents?: readonly AgentIntegration[];
+  // Required: values and safe status only; never print protected values.
+  discover(): readonly PluginDiscovery[];
+  loadValues(): readonly ProtectedValue[];
 }
 ```
 
-`ProtectedValue.value` is the protected literal and must never be logged. `PluginDiscovery` is the
-safe thing the CLI may print. `AgentIntegration` returns a launch plan; the CLI still owns shim
-resolution, proxy lifecycle, and cleanup.
+A plugin that defines registry hooks (`loadValues`, `discover`, `config`, or `setup`) without
+`kind: "registry-source"` and the required registry metadata fails validation. `ProtectedValue.value`
+is the protected literal and must never be logged. `PluginDiscovery` is the safe thing the CLI may
+print. Built-in `RegistryPluginConfig` / `RegistryPluginSetup` metadata lets each registry source
+own its TOML/env bindings and setup prompts. `AgentIntegration` returns a launch plan; the CLI still
+owns shim resolution, proxy lifecycle, and cleanup.
 
 ## Launch-time discovery UX
 
