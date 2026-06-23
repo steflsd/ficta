@@ -121,14 +121,13 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
   const install = await promptConfirm("Install/update claude/codex/pi shims now?", true);
   if (install) {
     const result = installShims({ agents: opts.supportedAgents, force: false, updateShell: true });
-    const lines = [
-      `shim dir: ${result.shimDir}`,
-      `${result.launcher.status} ficta launcher: ${result.launcher.path}`,
+    const lines = [`shim dir: ${result.shimDir}`, `${result.launcher.status} ficta launcher: ${result.launcher.path}`];
+    lines.push(
       ...result.shims.map((shim) => {
         const suffix = shim.realAgent ? ` (real ${shim.agent}: ${shim.realAgent})` : " (real agent not found yet)";
         return `${shim.status} ${shim.agent}: ${shim.path}${suffix}`;
       }),
-    ];
+    );
     if (result.rcPath) {
       if (result.pathUpdated) lines.push(`added ${result.shimDir} to PATH in ${result.rcPath}`);
       else if (result.pathAlreadyConfigured) lines.push(`PATH already configured in ${result.rcPath}`);

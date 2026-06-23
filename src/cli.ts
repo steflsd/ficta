@@ -4,6 +4,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { sanitizeAgentEnv } from "./child-env.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
+import { isGloballyDisabled, setGlobalDisabled } from "./global-disable.js";
 import { defaultShimDir, findExecutable, installShims, uninstallShims } from "./install.js";
 import { agentCommands, findAgentIntegration } from "./plugins/index.js";
 import { renderStartupBanner } from "./startup-banner.js";
@@ -55,7 +56,7 @@ if (command === "install") {
       : "✓ stable surrogate key already configured\n",
   );
   process.stderr.write(
-    `\nRestart your shell, then run:\n  ${supportedAgents.join("\n  ")}\n\nBypass once with: FICTA_DISABLE=1 ${supportedAgents[0] ?? "claude"}\n`,
+    `\nRestart your shell, then run:\n  ${supportedAgents.join("\n  ")}\n\nBypass once with: FICTA_DISABLE=1 ${supportedAgents[0] ?? "claude"}\nDisable globally with: ficta disable\n`,
   );
   process.exit(
     result.launcher.status === "skipped-existing" ||
@@ -86,6 +87,27 @@ if (command === "uninstall") {
   );
 }
 
+if (command === "disable") {
+  const result = setGlobalDisabled(true);
+  process.stderr.write(
+    result.changed
+      ? `✓ ficta disabled globally: ${result.path}\n`
+      : `- ficta already disabled globally: ${result.path}\n`,
+  );
+  process.stderr.write("Agent shims will bypass ficta until you run: ficta enable\n");
+  process.exit(0);
+}
+
+if (command === "enable") {
+  const result = setGlobalDisabled(false);
+  process.stderr.write(
+    result.changed
+      ? `✓ ficta enabled globally (removed ${result.path})\n`
+      : `- ficta already enabled globally: ${result.path} not present\n`,
+  );
+  process.exit(0);
+}
+
 if (command === "doctor") {
   const { collectDoctorReport, doctorExitCode, renderDoctorReport } = await import("./doctor.js");
   const report = collectDoctorReport({ agent: args[1] });
@@ -98,10 +120,16 @@ if (!agent) printHelp(2);
 const { rest, allowEmpty, verbose } = extractFictaFlags(args.slice(1));
 
 // Escape hatch for installed shims: run the real agent without starting ficta.
-if (process.env.FICTA_DISABLE === "1") {
+const disableReason =
+  process.env.FICTA_DISABLE === "1"
+    ? "FICTA_DISABLE=1"
+    : isGloballyDisabled()
+      ? "global disable is active; run `ficta enable` to re-enable"
+      : undefined;
+if (disableReason) {
   const agentPath = resolveAgentExecutable(agent.command);
   if (!agentPath) {
-    process.stderr.write(`ficta: FICTA_DISABLE=1 but could not find real ${agent.command} outside the shim dir\n`);
+    process.stderr.write(`ficta: disabled but could not find real ${agent.command} outside the shim dir\n`);
     process.exit(127);
   }
   const env = sanitizeAgentEnv(process.env);
@@ -110,7 +138,7 @@ if (process.env.FICTA_DISABLE === "1") {
     args: rest,
     env,
   };
-  process.stderr.write(`ficta disabled — launching ${plan.executable}\n`);
+  process.stderr.write(`ficta disabled (${disableReason}) — launching ${plan.executable}\n`);
   const code = await runChild(spawn(plan.executable, plan.args, { stdio: "inherit", env: plan.env }));
   await plan.cleanup?.();
   process.exit(code);
@@ -223,12 +251,14 @@ function printHelp(exitCode: number): never {
       "  ficta doctor [agent]          check config, registry sources, and agent routing\n" +
       `  ficta install                 install ${supportedAgents.join("/")} shims into ~/.ficta/bin\n` +
       "  ficta uninstall               remove installed shims\n" +
+      "  ficta disable                 globally bypass installed shims\n" +
+      "  ficta enable                  re-enable installed shims globally\n" +
       `  ficta <${agents}> [args]       launch an agent through an ephemeral proxy\n\n` +
       "agent flags:\n" +
       "  --allow-empty                 bypass FICTA_REQUIRE_REGISTRY=1 for this run\n" +
       "  --ficta-verbose              print detailed registry source report at startup\n\n" +
       "env:\n" +
-      `  FICTA_DISABLE=1 ${supportedAgents[0] ?? "claude"}        bypass an installed shim once\n` +
+      `  FICTA_DISABLE=1 ${supportedAgents[0] ?? "claude"}        bypass an installed shim once (does not persist)\n` +
       "  FICTA_VERBOSE=1              print detailed registry source report at startup\n" +
       "  FICTA_REQUIRE_REGISTRY=1      block agent launch when no protected values load\n" +
       "  FICTA_REGISTRY_PROCESS_ENV_ENABLED=0  disable secret-ish process-env loading\n" +

@@ -20,8 +20,19 @@ sandbox.
 
 ## Quick start
 
+Install globally with your package manager:
+
 ```sh
 npm install -g @steflsd/ficta@beta
+# or
+pnpm add -g @steflsd/ficta@beta
+# or
+bun install --global @steflsd/ficta@beta
+```
+
+Then set up ficta:
+
+```sh
 ficta setup              # configure ~/.ficta/config.toml; optionally install shims
 ficta doctor claude      # or: codex / pi
 # restart your shell if setup installed shims
@@ -103,15 +114,18 @@ ficta setup        # configure registry sources and optional shims
 ficta doctor       # check registry loading and agent routing
 ficta install      # install transparent claude/codex/pi shims
 ficta uninstall    # remove ficta-owned shims
+ficta disable      # globally bypass installed shims without uninstalling
+ficta enable       # re-enable installed shims globally
 ficta claude       # launch an agent through ficta without shims
 ```
 
-Useful one-off overrides:
+Useful overrides and bypasses:
 
 ```sh
 FICTA_REQUIRE_REGISTRY=1 claude          # refuse to launch if no protected values load
 FICTA_REDACT_PATHS=1 claude              # also redact filesystem-path-like tokens
 FICTA_DISABLE=1 claude                   # bypass an installed shim once
+ficta disable                            # bypass all shims until `ficta enable`
 ```
 
 ## Status
@@ -127,6 +141,7 @@ tests and local agent runs, but early users should run `ficta doctor <agent>` be
 - [`docs/exfil-and-egress.md`](./docs/exfil-and-egress.md) — why tool-channel egress is out of scope
 - [`docs/codex-oauth-intercept.md`](./docs/codex-oauth-intercept.md) — Codex ChatGPT/OAuth routing
 - [`docs/benchmarks.md`](./docs/benchmarks.md) — performance notes
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contributing to core and extension seams
 - [`SECURITY.md`](./SECURITY.md) — reporting vulnerabilities and expected limitations
 
 ## Development

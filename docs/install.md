@@ -3,10 +3,22 @@
 The preferred runtime shape is an **ephemeral proxy per agent session**: secrets are discovered in
 the current project/env, kept in memory for that session, then forgotten when the agent exits.
 
-To avoid relying on muscle memory (`ficta claude` every time), install shell shims once:
+Install ficta globally with your package manager:
 
 ```sh
+# npm
 npm install -g @steflsd/ficta@beta
+
+# pnpm (run `pnpm setup` first if pnpm global bins are not configured)
+pnpm add -g @steflsd/ficta@beta
+
+# bun
+bun install --global @steflsd/ficta@beta
+```
+
+Then, to avoid relying on muscle memory (`ficta claude` every time), install shell shims once:
+
+```sh
 ficta setup   # configure ~/.ficta/config.toml and optionally install shims
 # or just install shims directly:
 ficta install
@@ -31,13 +43,18 @@ pi
 The installed files are generated from agent-integration plugins:
 
 ```txt
-~/.ficta/bin/ficta   -> central launcher for the installed ficta CLI, using /usr/bin/env node
-~/.ficta/bin/claude  -> calls the sibling ficta launcher as: ficta claude "$@"
-~/.ficta/bin/codex   -> calls the sibling ficta launcher as: ficta codex "$@"
-~/.ficta/bin/pi      -> calls the sibling ficta launcher as: ficta pi "$@"
+~/.ficta/bin/.ficta-launcher -> hidden launcher for the installed ficta CLI, using /usr/bin/env node
+~/.ficta/bin/claude          -> calls the sibling launcher as: .ficta-launcher claude "$@"
+~/.ficta/bin/codex           -> calls the sibling launcher as: .ficta-launcher codex "$@"
+~/.ficta/bin/pi              -> calls the sibling launcher as: .ficta-launcher pi "$@"
 ```
 
-Only the central launcher contains the installed CLI path, so moving a development checkout only
+ficta intentionally does **not** install `~/.ficta/bin/ficta`, so the `ficta` command remains the
+global package-manager CLI. Upgrading is just rerunning your global install command, for example
+`npm install -g @steflsd/ficta@beta`, `pnpm add -g @steflsd/ficta@beta`, or
+`bun install --global @steflsd/ficta@beta`.
+
+Only the hidden launcher contains the installed CLI path, so moving a development checkout only
 requires rerunning `pnpm ficta install --force` to refresh one generated file.
 
 `ficta install` also adds `~/.ficta/bin` to your shell startup file (`~/.zshrc`, `~/.bashrc`, or
@@ -107,15 +124,26 @@ claude --allow-empty
 FICTA_ALLOW_EMPTY=1 claude
 ```
 
-## Bypass once
+## Disable or bypass
 
-If you need the real agent without ficta:
+If you need the real agent without ficta once:
 
 ```sh
 FICTA_DISABLE=1 claude
 FICTA_DISABLE=1 codex
 FICTA_DISABLE=1 pi
 ```
+
+To turn installed shims off globally without uninstalling them:
+
+```sh
+ficta disable
+# later:
+ficta enable
+```
+
+`ficta disable` writes `~/.ficta/disabled`; shims and `ficta <agent>` bypass the proxy while that
+file exists. `ficta enable` removes it.
 
 The shim resolves the real agent executable outside `~/.ficta/bin` to avoid recursion.
 

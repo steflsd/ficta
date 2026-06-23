@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync } from "node:fs";
 import { loadConfig } from "./config.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
+import { globalDisablePath, isGloballyDisabled } from "./global-disable.js";
 import { defaultShimDir, findExecutable } from "./install.js";
 import { codexUsesChatgptAuth } from "./plugins/agents.js";
 import {
@@ -25,6 +26,8 @@ export interface DoctorReport {
     logBodies: boolean;
     redactPaths: boolean;
     requireRegistry: boolean;
+    globallyDisabled: boolean;
+    disablePath: string;
     upstreams: { anthropic: string; openai: string; chatgpt: string };
     forcedUpstream?: string;
   };
@@ -57,6 +60,7 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
   applyRuntimeEnvDefaults(process.env);
 
   const cfg = loadConfig();
+  const globallyDisabled = isGloballyDisabled();
   const registry = loadPluginRegistry();
   const integrations = agentIntegrations();
   const selected = opts.agent ? integrations.find((agent) => agent.command === opts.agent) : undefined;
@@ -74,6 +78,10 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
           ? "no protected values loaded, and FICTA_REQUIRE_REGISTRY=1 would block agent launch"
           : "no protected values loaded; ficta would launch in passthrough mode",
     });
+  }
+
+  if (globallyDisabled) {
+    issues.push({ severity: "warning", message: "ficta is globally disabled; run `ficta enable` to re-enable shims" });
   }
 
   if (!cfg.failClosed) {
@@ -105,6 +113,8 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
       logBodies: cfg.logBodies,
       redactPaths: envFlag(process.env.FICTA_REDACT_PATHS),
       requireRegistry: process.env.FICTA_REQUIRE_REGISTRY === "1",
+      globallyDisabled,
+      disablePath: globalDisablePath(),
       upstreams: cfg.upstreams,
       forcedUpstream: cfg.forcedUpstream,
     },
@@ -141,6 +151,11 @@ export function renderDoctorReport(report: DoctorReport): string {
   );
   lines.push(
     `  ${report.config.requireRegistry ? "!" : "-"} require registry: ${report.config.requireRegistry ? "on" : "off"}`,
+  );
+  lines.push(
+    `  ${report.config.globallyDisabled ? "!" : "✓"} global disable: ${
+      report.config.globallyDisabled ? `ON (${report.config.disablePath})` : "off"
+    }`,
   );
   lines.push("");
 

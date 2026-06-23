@@ -52,19 +52,31 @@ Start with developers who already feel the pain:
 
 - Label early releases as beta / pre-1.0.
 - Publish the npm package as `@steflsd/ficta` with the `beta` dist-tag until field-tested.
-- Document beta installs as `npm install -g @steflsd/ficta@beta` until a `latest` release exists.
+- Document beta installs as global package-manager installs (`npm install -g @steflsd/ficta@beta`, `pnpm add -g @steflsd/ficta@beta`, `bun install --global @steflsd/ficta@beta`) until a `latest` release exists.
 - Keep [`threat-model.md`](./threat-model.md) and [`SECURITY.md`](../SECURITY.md) prominent.
 - Encourage `ficta doctor <agent>` before first use.
 - Use fake fixture values for redaction demos; never ask users to prove behavior with real secrets.
 
 ## npm beta checklist
 
+Configure npm Trusted Publishing for this repository using the `.github/workflows/publish.yml`
+workflow and the `npm-publish` environment. Keep release notes under `## Unreleased`, then run the
+local release script:
+
 ```sh
-pnpm check
-pnpm typecheck
-pnpm test
-npm pack --dry-run
-npm publish --access public --tag beta
-git tag v0.1.0-beta.0
-git push origin main --tags
+pnpm release:beta        # 0.1.0-beta.0 -> 0.1.0-beta.1; updates CHANGELOG.md too
+pnpm publish:dry         # optional local package-content dry run
+
+git log --oneline -2     # review release commit + next-cycle changelog commit
+VERSION=$(node -p "require('./package.json').version")
+git push origin main
+git push origin "v$VERSION"
 ```
+
+The tag push triggers CI publishing with npm provenance and creates/updates the GitHub Release from
+the matching `CHANGELOG.md` section. Prerelease versions publish with the first prerelease identifier
+as the npm dist-tag (`0.1.0-beta.1` -> `beta`); stable versions publish as `latest`.
+
+For the first stable release from a beta, use `pnpm release:stable` to drop the prerelease suffix
+(for example `0.1.0-beta.4` -> `0.1.0`). For later stable releases, use `pnpm release:patch` /
+`minor` / `major`.

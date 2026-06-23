@@ -10,6 +10,23 @@ The core invariant is:
 That lets us add sources like Doppler/1Password or detectors like Gitleaks without letting plugin
 code bypass the redaction boundary.
 
+## Terminology
+
+- **Plugin** — the umbrella term for a narrow extension point inside ficta. A plugin may provide
+  one or more capabilities below, but it should only report values, detections, or launch plans.
+- **Registry-source plugin** — loads exact protected values at launch, such as `.env`, process env,
+  Doppler, or a future secret-manager source. This is the strongest exact-match layer.
+- **Detector plugin** — inspects request text at runtime and reports values to protect. A PII
+  integration should be described as a **PII detector plugin**. Detector coverage is best effort and
+  secondary to registry-source exact matching.
+- **Agent-integration plugin** — teaches ficta how to launch a coding agent through the local proxy,
+  such as Claude Code, Codex, or Pi.
+- **Provider adapter** — provider/wire-format routing and restore support. This is core-owned for
+  now; new provider support should be discussed before a large PR.
+- **Addon** — a future packaging term for optional external code that may contain one or more
+  plugins. ficta does not yet have a stable external addon API or automatic third-party plugin
+  loading.
+
 ## Plugin types
 
 Today a plugin can provide any of these capabilities:
