@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.1.0-beta.1 - 2026-06-23
 
 - Added `ficta disable` and `ficta enable` to globally bypass/re-enable installed shims without uninstalling.
