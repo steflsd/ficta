@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed GitHub Actions pnpm setup by relying on `packageManager` as the single pinned pnpm version.
+
 ## 0.1.0-beta.2 - 2026-06-24
 
 - Hono 2.0.6
