@@ -151,6 +151,202 @@ export class Vault {
       },
     });
   }
+
+  /**
+   * SSE restore for provider streams that carry text/tool-call arguments as JSON string fragments.
+   * A surrogate can be split across adjacent SSE events even when the raw bytes are not adjacent;
+   * the provider-specific `adapter` (see wire-restore.ts) names which semantic fragments to buffer
+   * until they can be restored. The vault owns only the generic, provider-agnostic SSE mechanics.
+   */
+  restoreEventStream(adapter: SseRestoreAdapter): TransformStream<Uint8Array, Uint8Array> {
+    return createSseRestoreStream((text) => this.restoreText(text), adapter);
+  }
+}
+
+interface SseField {
+  raw: string;
+  name?: string;
+  value?: string;
+}
+
+interface SseRecord {
+  fields: SseField[];
+  data?: string;
+  eventName?: string;
+}
+
+export interface PendingSseFragment {
+  value: string;
+  eventName?: string;
+  flushData: (value: string) => Record<string, unknown>;
+}
+
+export interface StreamingTextFragment extends PendingSseFragment {
+  key: string;
+  setValue: (value: string) => void;
+}
+
+/**
+ * Provider-specific knowledge the generic SSE restore needs: which fields in a parsed event are
+ * incremental text fragments to accumulate/restore, and which events signal a logical end (so any
+ * held partial surrogate can be flushed). Implemented per wire in wire-restore.ts.
+ */
+export interface SseRestoreAdapter {
+  fragments(data: unknown, eventName?: string): StreamingTextFragment[];
+  stopPrefixes(data: unknown): string[];
+}
+
+function createSseRestoreStream(
+  restoreText: (text: string) => string,
+  adapter: SseRestoreAdapter,
+): TransformStream<Uint8Array, Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const pending = new Map<string, PendingSseFragment>();
+  let buf = "";
+
+  const encode = (text: string, controller: TransformStreamDefaultController<Uint8Array>): void => {
+    if (text) controller.enqueue(encoder.encode(text));
+  };
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      buf += decoder.decode(chunk, { stream: true });
+      for (;;) {
+        const boundary = findSseRecordBoundary(buf);
+        if (!boundary) break;
+        const record = buf.slice(0, boundary.index + boundary.length);
+        buf = buf.slice(boundary.index + boundary.length);
+        encode(restoreSseRecord(record, pending, restoreText, adapter), controller);
+      }
+    },
+    flush(controller) {
+      buf += decoder.decode();
+      if (buf) encode(restoreSseRecord(buf, pending, restoreText, adapter), controller);
+      encode(flushPendingSseFragments(pending, restoreText), controller);
+    },
+  });
+}
+
+function restoreSseRecord(
+  record: string,
+  pending: Map<string, PendingSseFragment>,
+  restoreText: (text: string) => string,
+  adapter: SseRestoreAdapter,
+): string {
+  const parsed = parseSseRecord(record);
+  if (parsed.data?.trim() === "[DONE]") {
+    return flushPendingSseFragments(pending, restoreText) + restoreText(record);
+  }
+
+  let data: unknown;
+  if (parsed.data !== undefined) {
+    try {
+      data = JSON.parse(parsed.data);
+    } catch {
+      return restoreText(record);
+    }
+  }
+
+  let prefix = "";
+  for (const stopPrefix of adapter.stopPrefixes(data)) {
+    prefix += flushPendingSseFragments(pending, restoreText, stopPrefix);
+  }
+
+  const fragments = adapter.fragments(data, parsed.eventName);
+  if (fragments.length === 0) return prefix + restoreText(record);
+
+  for (const fragment of fragments) {
+    const combined = (pending.get(fragment.key)?.value ?? "") + fragment.value;
+    const restored = restoreText(combined);
+    const { emit, hold } = splitForPotentialSurrogate(restored);
+    if (hold) pending.set(fragment.key, { value: hold, eventName: fragment.eventName, flushData: fragment.flushData });
+    else pending.delete(fragment.key);
+    fragment.setValue(emit);
+  }
+
+  return prefix + renderSseJsonRecord(parsed, data);
+}
+
+function flushPendingSseFragments(
+  pending: Map<string, PendingSseFragment>,
+  restoreText: (text: string) => string,
+  keyPrefix = "",
+): string {
+  let out = "";
+  for (const [key, fragment] of [...pending]) {
+    if (keyPrefix && !key.startsWith(keyPrefix)) continue;
+    const value = restoreText(fragment.value);
+    if (value) out += renderSseDataEvent(fragment.eventName, fragment.flushData(value));
+    pending.delete(key);
+  }
+  return out;
+}
+
+function splitForPotentialSurrogate(text: string): { emit: string; hold: string } {
+  const max = Math.min(SUR_LEN - 1, text.length);
+  for (let length = max; length > 0; length -= 1) {
+    const suffix = text.slice(text.length - length);
+    if (isPotentialSurrogatePrefix(suffix)) {
+      return { emit: text.slice(0, text.length - length), hold: suffix };
+    }
+  }
+  return { emit: text, hold: "" };
+}
+
+function isPotentialSurrogatePrefix(value: string): boolean {
+  if (!value || value.length >= SUR_LEN) return false;
+  if (SUR_PREFIX.startsWith(value)) return true;
+  if (!value.startsWith(SUR_PREFIX)) return false;
+  return /^[0-9a-f]*$/.test(value.slice(SUR_PREFIX.length));
+}
+
+function findSseRecordBoundary(text: string): { index: number; length: number } | undefined {
+  const candidates = [
+    { index: text.indexOf("\r\n\r\n"), length: 4 },
+    { index: text.indexOf("\n\n"), length: 2 },
+    { index: text.indexOf("\r\r"), length: 2 },
+  ].filter((candidate) => candidate.index !== -1);
+  return candidates.sort((a, b) => a.index - b.index)[0];
+}
+
+function parseSseRecord(record: string): SseRecord {
+  const body = record.replace(/(?:\r\n\r\n|\n\n|\r\r)$/, "");
+  const lines = body ? body.split(/\r\n|\n|\r/) : [];
+  const fields = lines.map(parseSseField);
+  const data = fields
+    .filter((field) => field.name === "data")
+    .map((field) => field.value ?? "")
+    .join("\n");
+  let eventName: string | undefined;
+  for (const field of fields) if (field.name === "event") eventName = field.value;
+  return { fields, data: data || undefined, eventName };
+}
+
+function parseSseField(line: string): SseField {
+  if (line.startsWith(":")) return { raw: line };
+  const colon = line.indexOf(":");
+  if (colon === -1) return { raw: line, name: line, value: "" };
+  const name = line.slice(0, colon);
+  const rawValue = line.slice(colon + 1);
+  const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
+  return { raw: line, name, value };
+}
+
+function renderSseJsonRecord(record: SseRecord, data: unknown): string {
+  const lines = record.fields.filter((field) => field.name !== "data").map((field) => field.raw);
+  lines.push(`data: ${JSON.stringify(data)}`);
+  return `${lines.join("\n")}\n\n`;
+}
+
+function renderSseDataEvent(eventName: string | undefined, data: unknown): string {
+  const lines = eventName ? [`event: ${eventName}`] : [];
+  lines.push(`data: ${JSON.stringify(data)}`);
+  return `${lines.join("\n")}\n\n`;
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function replaceKnownOutsidePaths(text: string, needle: string, replacement: string): { text: string; count: number } {

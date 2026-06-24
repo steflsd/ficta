@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed streamed SSE restore when supported provider deltas split a `FICTA_...` surrogate across events.
 - Fixed GitHub Actions pnpm setup by relying on `packageManager` as the single pinned pnpm version.
 
 ## 0.1.0-beta.2 - 2026-06-24

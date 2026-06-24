@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { inspectionLines, inspectJson, inspectSse, inspectText, registeredValueCount } from "./inspection.js";
+import { type Wire, wireOf } from "./wire.js";
 
 const cfg = loadConfig();
 // Per-run dir so sessions never mix (seq resets on restart; old files would otherwise bleed in).
@@ -26,14 +27,7 @@ const preview = (s: unknown, max: number) => {
   return flat.length > max ? flat.slice(0, max) + "…" : flat;
 };
 
-export type Wire = "anthropic" | "openai-chat" | "openai-responses" | "unknown";
-
-export function wireOf(path: string): Wire {
-  if (path.includes("/chat/completions")) return "openai-chat";
-  if (path.includes("/responses")) return "openai-responses";
-  if (path.includes("/messages")) return "anthropic";
-  return "unknown";
-}
+export { type Wire, wireOf } from "./wire.js";
 
 export function logRequest(args: {
   method: string;

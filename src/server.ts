@@ -9,6 +9,7 @@ import { ProtectionEngine } from "./engine.js";
 import { logRequest, logResponse, runDir } from "./log.js";
 import { type FictaPlugin, type PluginDiscovery, registryDiscoveryLines } from "./plugins/index.js";
 import { surrogateKeyWarning } from "./vault.js";
+import { wireOf } from "./wire.js";
 
 export interface ProxyHandle {
   port: number;
@@ -150,7 +151,13 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     if (upstreamRes.body) {
       const [toClient, toLog] = upstreamRes.body.tee();
       void logResponse({ n, path: url.pathname, status: upstreamRes.status, contentType, stream: toLog });
-      const out = restoreResponse ? toClient.pipeThrough(engine.restoreStream()) : toClient;
+      const out = restoreResponse
+        ? toClient.pipeThrough(
+            isEventStreamContentType(contentType)
+              ? engine.restoreEventStream(wireOf(url.pathname))
+              : engine.restoreStream(),
+          )
+        : toClient;
       return new Response(out, { status: upstreamRes.status, headers: resHeaders });
     }
 
@@ -198,8 +205,16 @@ const HEALTH_PATH = "/__ficta/health";
 const REQUIRED_AUTH_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "cookie"]);
 
 function isRestorableContentType(contentType: string): boolean {
-  const type = contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
+  const type = contentTypeBase(contentType);
   return type.startsWith("text/") || type.includes("json") || type.includes("event-stream");
+}
+
+function isEventStreamContentType(contentType: string): boolean {
+  return contentTypeBase(contentType) === "text/event-stream";
+}
+
+function contentTypeBase(contentType: string): string {
+  return contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
 }
 
 function redactNonAuthHeaders(engine: ProtectionEngine, headers: Headers): { count: number; leaks: number } {

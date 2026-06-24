@@ -21,6 +21,14 @@ function close(server: ReturnType<typeof createServer>): Promise<void> {
   });
 }
 
+function anthropicInputDelta(index: number, partial_json: string): string {
+  return `event: content_block_delta\ndata: ${JSON.stringify({
+    type: "content_block_delta",
+    index,
+    delta: { type: "input_json_delta", partial_json },
+  })}\n\n`;
+}
+
 describe("proxy hardening", () => {
   it("does not write protected literals into safe metadata logs", async () => {
     const originalEnv = {
@@ -229,6 +237,88 @@ describe("proxy hardening", () => {
       expect(surrogate).toBeTruthy();
       expect(text).toContain(AWS);
       expect(text).not.toContain(surrogate);
+    } finally {
+      proxy?.close();
+      await close(upstream);
+      for (const [k, v] of Object.entries(originalEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("restores surrogates split across Anthropic SSE tool-input events", async () => {
+    const secret = "corova-control-plane";
+    const originalEnv = {
+      FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
+      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
+      FICTA_SILENT: process.env.FICTA_SILENT,
+    };
+
+    let received = "";
+    const upstream = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        received = body;
+        const surrogate = body.match(/FICTA_[0-9a-f]{32}/)?.[0] ?? "";
+        const first = `{"oldText":"${surrogate.slice(0, 18)}`;
+        const second = `${surrogate.slice(18)}","newText":"fixed"}`;
+        const sse = [
+          anthropicInputDelta(0, first),
+          anthropicInputDelta(0, second),
+          `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+        ].join("");
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(sse);
+      });
+    });
+
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      const upstreamPort = await listen(upstream);
+      process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
+      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
+      process.env.FICTA_SILENT = "1";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({
+        port: 0,
+        plugins: [
+          {
+            kind: "registry-source",
+            name: "fixture-registry",
+            config: { bindings: [], sections: [], envDefaults: {} },
+            setup: { registrySources: () => [] },
+            discover: () => [],
+            loadValues: () => [
+              { name: "FIXTURE_SERVICE", value: secret, source: "fixture", kind: "secret", confidence: "exact" },
+            ],
+          },
+        ],
+      });
+
+      const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: secret }),
+      });
+      const text = await res.text();
+      const toolInput = [...text.matchAll(/^data: (.+)$/gm)]
+        .map((match) => JSON.parse(match[1] ?? "{}"))
+        .map((event) => event?.delta?.partial_json ?? "")
+        .join("");
+
+      expect(res.status).toBe(200);
+      expect(received).not.toContain(secret);
+      expect(received).toMatch(/FICTA_[0-9a-f]{32}/);
+      expect(toolInput).toContain(`"oldText":"${secret}"`);
+      expect(toolInput).not.toContain("FICTA_");
     } finally {
       proxy?.close();
       await close(upstream);

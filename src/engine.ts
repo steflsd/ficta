@@ -8,6 +8,8 @@ import {
   pluginsHaveDetectors,
 } from "./plugins/index.js";
 import { Vault } from "./vault.js";
+import type { Wire } from "./wire.js";
+import { sseRestoreAdapterFor } from "./wire-restore.js";
 
 export interface ProtectionEngineOptions {
   plugins?: readonly FictaPlugin[];
@@ -77,6 +79,10 @@ export class ProtectionEngine {
 
   restoreStream(): TransformStream<Uint8Array, Uint8Array> {
     return this.vault.restoreStream();
+  }
+
+  restoreEventStream(wire: Wire): TransformStream<Uint8Array, Uint8Array> {
+    return this.vault.restoreEventStream(sseRestoreAdapterFor(wire));
   }
 
   private registerDetectedValues(text: string, ctx: DetectTextContext): number {

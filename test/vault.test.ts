@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { loadRegistryValues } from "../src/plugins/index.js";
 import { Vault } from "../src/vault.js";
+import { sseRestoreAdapterFor } from "../src/wire-restore.js";
 
 const AWS = "AKIAIOSFODNN7EXAMPLE";
 const v = new Vault(loadRegistryValues());
@@ -182,24 +183,125 @@ describe("vault", () => {
     const sur = red.match(/FICTA_[0-9a-f]{32}/)?.[0] ?? "";
     const text = `data: {"t":"${sur}"}\n\n`;
     const cut = text.indexOf(sur) + 8; // mid-surrogate
-    const rs = v.restoreStream();
-    const w = rs.writable.getWriter();
-    const r = rs.readable.getReader();
-    const enc = new TextEncoder();
-    const dec = new TextDecoder();
-    let out = "";
-    const pump = (async () => {
-      for (;;) {
-        const { done, value } = await r.read();
-        if (done) break;
-        out += dec.decode(value);
-      }
-    })();
-    await w.write(enc.encode(text.slice(0, cut)));
-    await w.write(enc.encode(text.slice(cut)));
-    await w.close();
-    await pump;
+    const out = await transformText(v.restoreStream(), [text.slice(0, cut), text.slice(cut)]);
     expect(out).toContain(AWS);
     expect(out).not.toContain(sur);
   });
+
+  it("SSE restore reassembles Anthropic tool input deltas split across events", async () => {
+    const secret = "corova-control-plane";
+    const vault = new Vault([{ value: secret }]);
+    const surrogate = vault.redactText(secret).text;
+    const first = `{\\"oldText\\":\\"${surrogate.slice(0, 18)}`;
+    const second = `${surrogate.slice(18)}\\",\\"newText\\":\\"fixed\\"}`;
+    const sse = [
+      anthropicInputDelta(0, first),
+      anthropicInputDelta(0, second),
+      `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+    ].join("");
+
+    const out = await transformText(vault.restoreEventStream(sseRestoreAdapterFor("anthropic")), [sse]);
+    const toolInput = streamedJsonData(out)
+      .map((event) => event?.delta?.partial_json ?? "")
+      .join("");
+
+    expect(toolInput).toContain(`\\"oldText\\":\\"${secret}\\"`);
+    expect(toolInput).not.toContain(surrogate);
+    expect(toolInput).not.toContain("FICTA_");
+  });
+
+  it("SSE restore reassembles OpenAI chat tool-call argument deltas split across events", async () => {
+    const secret = "corova-control-plane";
+    const vault = new Vault([{ value: secret }]);
+    const surrogate = vault.redactText(secret).text;
+    const first = `{"oldText":"${surrogate.slice(0, 18)}`;
+    const second = `${surrogate.slice(18)}","newText":"fixed"}`;
+    const sse = [openAiChatToolDelta(0, 0, first), openAiChatToolDelta(0, 0, second), "data: [DONE]\n\n"].join("");
+
+    const out = await transformText(vault.restoreEventStream(sseRestoreAdapterFor("openai-chat")), [sse]);
+    const toolInput = streamedJsonData(out)
+      .flatMap((event) => event?.choices ?? [])
+      .flatMap((choice) => choice?.delta?.tool_calls ?? [])
+      .map((toolCall) => toolCall?.function?.arguments ?? "")
+      .join("");
+
+    expect(toolInput).toContain(`"oldText":"${secret}"`);
+    expect(toolInput).not.toContain(surrogate);
+    expect(toolInput).not.toContain("FICTA_");
+  });
+
+  it("SSE restore reassembles OpenAI Responses tool-call argument deltas split across events", async () => {
+    const secret = "corova-control-plane";
+    const vault = new Vault([{ value: secret }]);
+    const surrogate = vault.redactText(secret).text;
+    const first = `{"oldText":"${surrogate.slice(0, 18)}`;
+    const second = `${surrogate.slice(18)}","newText":"fixed"}`;
+    const sse = [
+      openAiResponsesArgumentsDelta("call_1", first),
+      openAiResponsesArgumentsDelta("call_1", second),
+      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed" })}\n\n`,
+    ].join("");
+
+    const out = await transformText(vault.restoreEventStream(sseRestoreAdapterFor("openai-responses")), [sse]);
+    const toolInput = streamedJsonData(out)
+      .map((event) => (event?.type === "response.function_call_arguments.delta" ? (event.delta ?? "") : ""))
+      .join("");
+
+    expect(toolInput).toContain(`"oldText":"${secret}"`);
+    expect(toolInput).not.toContain(surrogate);
+    expect(toolInput).not.toContain("FICTA_");
+  });
 });
+
+function anthropicInputDelta(index: number, partial_json: string): string {
+  return `event: content_block_delta\ndata: ${JSON.stringify({
+    type: "content_block_delta",
+    index,
+    delta: { type: "input_json_delta", partial_json },
+  })}\n\n`;
+}
+
+function openAiChatToolDelta(choiceIndex: number, toolIndex: number, argumentsDelta: string): string {
+  return `data: ${JSON.stringify({
+    choices: [
+      {
+        index: choiceIndex,
+        delta: { tool_calls: [{ index: toolIndex, function: { arguments: argumentsDelta } }] },
+      },
+    ],
+  })}\n\n`;
+}
+
+function openAiResponsesArgumentsDelta(item_id: string, delta: string): string {
+  return `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({
+    type: "response.function_call_arguments.delta",
+    item_id,
+    delta,
+  })}\n\n`;
+}
+
+function streamedJsonData(sse: string): any[] {
+  return [...sse.matchAll(/^data: (.+)$/gm)]
+    .map((match) => match[1] ?? "")
+    .filter((data) => data !== "[DONE]")
+    .map((data) => JSON.parse(data));
+}
+
+async function transformText(stream: TransformStream<Uint8Array, Uint8Array>, chunks: string[]): Promise<string> {
+  const writer = stream.writable.getWriter();
+  const reader = stream.readable.getReader();
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  let out = "";
+  const pump = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += decoder.decode(value);
+    }
+  })();
+  for (const chunk of chunks) await writer.write(encoder.encode(chunk));
+  await writer.close();
+  await pump;
+  return out;
+}
