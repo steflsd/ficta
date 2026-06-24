@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.1.0-beta.2 - 2026-06-24
 
 - Hono 2.0.6
