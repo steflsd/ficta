@@ -1,6 +1,6 @@
 {
   "name": "@steflsd/ficta",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "private": false,
   "type": "module",
   "description": "Keep your registered secrets out of the LLM — local redaction proxy for coding agents",
