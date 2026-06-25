@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Updated Hono to 4.12.27 and Biome to 2.5.1.
 - Fixed streamed SSE restore when supported provider deltas split a `FICTA_...` surrogate across events.
 - Fixed GitHub Actions pnpm setup by relying on `packageManager` as the single pinned pnpm version.
 
