@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ProtectionEngine } from "../src/engine.js";
-import type { DetectorPlugin, RegistrySourcePlugin } from "../src/plugins/index.js";
+import { type DetectorPlugin, dopplerPlugin, type RegistrySourcePlugin } from "../src/plugins/index.js";
 
 const SECRET = "test-secret-value-12345";
 const EMAIL = "alice@example.com";
@@ -82,5 +82,81 @@ describe("protection engine plugins", () => {
     expect(engine.registrySize).toBe(0);
     expect(engine.size).toBe(0);
     expect(engine.enabled).toBe(false);
+  });
+
+  describe("trusted registry-policy exclusions reach every vault ingress", () => {
+    const POLICY_ENV = [
+      "FICTA_REGISTRY_DOPPLER_ENABLED",
+      "FICTA_REGISTRY_PROCESS_ENV_ENABLED",
+      "FICTA_REGISTRY_ENV_FILE_ENABLED",
+    ] as const;
+    let saved: Partial<Record<(typeof POLICY_ENV)[number], string>>;
+
+    afterEach(() => {
+      for (const key of POLICY_ENV) {
+        if (saved?.[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    });
+
+    it("drops excluded names from opts.values and detector output but keeps real secrets", () => {
+      saved = Object.fromEntries(POLICY_ENV.map((k) => [k, process.env[k]]));
+      // Keep launch sources quiet (no Doppler CLI spawn, no ambient env/.env) so the built-in
+      // Doppler plugin contributes only its trusted DOPPLER_CONFIG metadata exclusion.
+      process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "0";
+      process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "0";
+      process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+
+      const detector: DetectorPlugin = {
+        kind: "detector",
+        name: "fixture-detector",
+        detectText: () => [
+          {
+            name: "DOPPLER_CONFIG",
+            value: "detector-routing-label",
+            source: "fixture",
+            kind: "secret",
+            confidence: "exact",
+          },
+          {
+            name: "OTHER_SECRET",
+            value: "real-secret-value-abc",
+            source: "fixture",
+            kind: "secret",
+            confidence: "exact",
+          },
+        ],
+      };
+
+      const engine = new ProtectionEngine({
+        plugins: [dopplerPlugin, detector],
+        values: [
+          {
+            name: "DOPPLER_CONFIG",
+            value: "opts-routing-label",
+            source: "fixture",
+            kind: "secret",
+            confidence: "exact",
+          },
+          { name: "KEEP_ME", value: "kept-secret-value-xyz", source: "fixture", kind: "secret", confidence: "exact" },
+        ],
+      });
+
+      // opts.values: DOPPLER_CONFIG excluded by the trusted Doppler rule, KEEP_ME registered.
+      expect(engine.registrySize).toBe(1);
+
+      const body = JSON.stringify({
+        content: "detector-routing-label / real-secret-value-abc / opts-routing-label / kept-secret-value-xyz",
+      });
+      const redacted = engine.redactBody(body);
+
+      expect(redacted.leaks).toBe(0);
+      // Excluded names (from both detector and opts.values) are left intact.
+      expect(redacted.body).toContain("detector-routing-label");
+      expect(redacted.body).toContain("opts-routing-label");
+      // Real secrets are still protected.
+      expect(redacted.body).not.toContain("real-secret-value-abc");
+      expect(redacted.body).not.toContain("kept-secret-value-xyz");
+    });
   });
 });

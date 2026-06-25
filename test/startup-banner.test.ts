@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PluginDiscovery } from "../src/plugins/index.js";
+import type { PluginDiscovery, RegistryPolicy } from "../src/plugins/index.js";
 import { renderStartupBanner } from "../src/startup-banner.js";
 
 const discoveries: PluginDiscovery[] = [
@@ -63,6 +63,113 @@ describe("startup banner", () => {
     expect(rendered).toContain("✓ Doppler CLI (34 values)");
     expect(rendered).toContain(".env: not found");
     expect(rendered).toContain("doppler secrets download");
+  });
+
+  it("reports registry-policy exclusions separately from dedupe", () => {
+    const policy: RegistryPolicy = {
+      exclusions: [
+        {
+          plugin: "doppler-cli",
+          trusted: true,
+          id: "doppler-metadata-env-names",
+          kind: "env-name",
+          names: ["DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT", "DOPPLER_PROJECT"],
+          reason: "Doppler routing/config metadata env vars are not secret material",
+        },
+      ],
+    };
+    const rendered = renderStartupBanner({
+      protectedValues: 92,
+      agentCommand: "claude",
+      baseUrl: "http://127.0.0.1:59717",
+      discoveries: [
+        {
+          id: "known-env-values/process-env",
+          plugin: "known-env-values",
+          label: "process env",
+          status: "loaded",
+          valueCount: 95,
+        },
+      ],
+      policyExcluded: 3,
+      policyExcludedBySource: { "process-env": 3 },
+      registryPolicy: policy,
+    });
+
+    expect(rendered).toContain("3 excluded by registry policy");
+    expect(rendered).not.toContain("before dedupe");
+    // The source line itself reconciles, not just the headline.
+    expect(rendered).toContain("process env 95 (3 excluded)");
+  });
+
+  it("hides untrusted, not-enforced rules from the verbose banner", () => {
+    const policy: RegistryPolicy = {
+      exclusions: [
+        {
+          plugin: "third-party",
+          trusted: false,
+          id: "x",
+          kind: "env-name",
+          names: ["SOME_NAME"],
+          reason: "declared by an untrusted plugin",
+        },
+      ],
+    };
+    const rendered = renderStartupBanner({
+      protectedValues: 1,
+      agentCommand: "claude",
+      baseUrl: "http://127.0.0.1:59717",
+      discoveries: [
+        {
+          id: "known-env-values/process-env",
+          plugin: "known-env-values",
+          label: "process env",
+          status: "loaded",
+          valueCount: 1,
+        },
+      ],
+      registryPolicy: policy,
+      verbose: true,
+    });
+
+    // Untrusted rules are diagnostic noise for end users; only doctor surfaces them.
+    expect(rendered).not.toContain("registry policy exclusions:");
+    expect(rendered).not.toContain("SOME_NAME");
+  });
+
+  it("shows the policy exclusion breakdown in verbose mode", () => {
+    const policy: RegistryPolicy = {
+      exclusions: [
+        {
+          plugin: "doppler-cli",
+          trusted: true,
+          id: "doppler-metadata-env-names",
+          kind: "env-name",
+          names: ["DOPPLER_CONFIG"],
+          reason: "routing metadata",
+        },
+      ],
+    };
+    const rendered = renderStartupBanner({
+      protectedValues: 1,
+      agentCommand: "claude",
+      baseUrl: "http://127.0.0.1:59717",
+      discoveries: [
+        {
+          id: "known-env-values/process-env",
+          plugin: "known-env-values",
+          label: "process env",
+          status: "loaded",
+          valueCount: 2,
+        },
+      ],
+      policyExcluded: 1,
+      registryPolicy: policy,
+      verbose: true,
+    });
+
+    expect(rendered).toContain("registry policy exclusions:");
+    expect(rendered).toContain("doppler-cli: DOPPLER_CONFIG");
   });
 
   it("calls out errored sources without dumping full details", () => {

@@ -1,6 +1,8 @@
+import { plural } from "../text.js";
 import { builtInAgentPlugin } from "./agents.js";
 import { dopplerPlugin, resetDopplerPluginCacheForTests } from "./doppler.js";
 import { knownEnvPlugin, resetKnownEnvPluginCacheForTests } from "./known-env.js";
+import { buildRegistryPolicy, protectedValueExcludedBy, validateRegistryPolicy } from "./policy.js";
 import type {
   AgentIntegration,
   ConfigBinding,
@@ -9,6 +11,7 @@ import type {
   PluginDiscovery,
   PluginDiscoveryStatus,
   ProtectedValue,
+  RegistryPolicy,
   RegistrySetupDiscoveryContext,
   RegistrySetupSource,
   RegistrySourcePlugin,
@@ -25,6 +28,7 @@ export {
 } from "./agents.js";
 export { dopplerPlugin, loadDopplerStats, resetDopplerPluginCacheForTests } from "./doppler.js";
 export { knownEnvPlugin, loadKnownEnvStats, resetKnownEnvPluginCacheForTests } from "./known-env.js";
+export { buildRegistryPolicy, protectedValueExcludedBy } from "./policy.js";
 export type {
   AgentBypassContext,
   AgentIntegration,
@@ -36,14 +40,19 @@ export type {
   ConfigSection,
   DetectorPlugin,
   DetectTextContext,
+  EffectiveRegistryExclusionRule,
   FictaPlugin,
   PluginDiscovery,
   PluginDiscoveryStatus,
   ProtectedValue,
   ProtectedValueKind,
   ProtectionConfidence,
+  RegistryExclusionKind,
+  RegistryExclusionRule,
   RegistryPluginConfig,
   RegistryPluginSetup,
+  RegistryPolicy,
+  RegistryPolicyContribution,
   RegistrySetupDiscoveryContext,
   RegistrySetupPromptContext,
   RegistrySetupSource,
@@ -51,6 +60,12 @@ export type {
 } from "./types.js";
 
 export const defaultPlugins: readonly FictaPlugin[] = [dopplerPlugin, knownEnvPlugin, builtInAgentPlugin];
+
+/**
+ * Plugins core vouches for. Only these may contribute *enforced* registry exclusions
+ * (un-protection). Identity-based so a fixture/external plugin cannot grant itself trust by name.
+ */
+const TRUSTED_PLUGINS: ReadonlySet<FictaPlugin> = new Set(defaultPlugins);
 
 export function pluginConfigBindings(plugins: readonly FictaPlugin[] = defaultPlugins): ConfigBinding[] {
   return registryPlugins(plugins).flatMap((plugin) => [...plugin.config.bindings]);
@@ -87,6 +102,8 @@ export function validatePluginBoundaries(plugins: readonly FictaPlugin[]): void 
     const name = typeof rawPlugin.name === "string" ? rawPlugin.name : "<unnamed>";
     const hasRegistryHook =
       "loadValues" in rawPlugin || "discover" in rawPlugin || "config" in rawPlugin || "setup" in rawPlugin;
+
+    validateRegistryPolicy(name, rawPlugin.registryPolicy);
 
     if (rawPlugin.kind !== "registry-source") {
       if (hasRegistryHook) {
@@ -135,14 +152,22 @@ export interface PluginRegistrySnapshot {
   values: ProtectedValue[];
   pluginNames: string[];
   discoveries: PluginDiscovery[];
+  registryPolicy: RegistryPolicy;
+  /** Count of launch-time candidates dropped by an enforced (trusted) exclusion. */
+  policyExcluded: number;
+  /** Excluded counts keyed by the candidate's `source` (e.g. "process-env"), for per-source reporting. */
+  policyExcludedBySource: Record<string, number>;
 }
 
 export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlugins): PluginRegistrySnapshot {
   validatePluginBoundaries(plugins);
 
+  const registryPolicy = buildRegistryPolicy(plugins, TRUSTED_PLUGINS);
   const values: ProtectedValue[] = [];
   const pluginNames: string[] = [];
   const discoveries: PluginDiscovery[] = [];
+  let policyExcluded = 0;
+  const policyExcludedBySource: Record<string, number> = {};
 
   for (const plugin of plugins) {
     pluginNames.push(plugin.name);
@@ -151,7 +176,13 @@ export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlug
     try {
       const loaded = plugin.loadValues();
       for (const value of loaded) {
-        values.push({ ...value, plugin: value.plugin ?? plugin.name });
+        const candidate = { ...value, plugin: value.plugin ?? plugin.name };
+        if (protectedValueExcludedBy(candidate, registryPolicy)) {
+          policyExcluded++;
+          policyExcludedBySource[candidate.source] = (policyExcludedBySource[candidate.source] ?? 0) + 1;
+          continue;
+        }
+        values.push(candidate);
       }
     } catch {
       discoveries.push({
@@ -177,7 +208,38 @@ export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlug
     }
   }
 
-  return { values, pluginNames, discoveries };
+  return { values, pluginNames, discoveries, registryPolicy, policyExcluded, policyExcludedBySource };
+}
+
+/**
+ * Resolve a discovery to the `ProtectedValue.source` key its values carry, so per-source exclusion
+ * counts (keyed by source) can be attributed back to a discovery line. The id/source naming is not
+ * uniform across built-ins (Doppler's id is `doppler-cli/secrets-download` but its source is
+ * `doppler`), so this small lookup is the single place that bridges the two.
+ */
+export function discoverySourceKey(discovery: PluginDiscovery): string | undefined {
+  if (discovery.id.endsWith("/process-env")) return "process-env";
+  if (discovery.id.endsWith("/env-file")) return "env-file";
+  if (discovery.plugin === "doppler-cli") return "doppler";
+  return undefined;
+}
+
+/** Safe one-line summaries of registry-policy exclusions, for verbose reports. */
+export function registryPolicyLines(
+  policy: RegistryPolicy,
+  indent = "  ",
+  opts: { enforcedOnly?: boolean } = {},
+): string[] {
+  const rules = opts.enforcedOnly ? policy.exclusions.filter((rule) => rule.trusted) : policy.exclusions;
+  if (rules.length === 0) return [];
+  const out: string[] = [];
+  for (const rule of rules) {
+    const state = rule.trusted ? "enforced" : "declared, not enforced (untrusted plugin)";
+    out.push(
+      `${indent}${rule.trusted ? "✓" : "!"} ${rule.plugin}: ${rule.names.join(", ")} — ${rule.reason} [${state}]`,
+    );
+  }
+  return out;
 }
 
 export function loadRegistryValues(plugins: readonly FictaPlugin[] = defaultPlugins): ProtectedValue[] {
@@ -210,14 +272,20 @@ export function resetPluginCachesForTests(): void {
   resetKnownEnvPluginCacheForTests();
 }
 
-export function registryDiscoveryLines(discoveries: readonly PluginDiscovery[], indent = "  "): string[] {
+export function registryDiscoveryLines(
+  discoveries: readonly PluginDiscovery[],
+  indent = "  ",
+  excludedBySource: Record<string, number> = {},
+): string[] {
   if (discoveries.length === 0) return [`${indent}- no registry sources reported`];
 
   const out: string[] = [];
   for (const d of discoveries) {
     const count = d.valueCount === undefined ? "" : ` (${d.valueCount} ${plural(d.valueCount, "value")})`;
+    const excluded = excludedBySource[discoverySourceKey(d) ?? ""] ?? 0;
+    const excludedNote = excluded > 0 ? ` (${excluded} excluded by policy)` : "";
     const message = d.message ? ` — ${d.message}` : "";
-    out.push(`${indent}${statusIcon(d.status)} ${d.label}${count}${message}`);
+    out.push(`${indent}${statusIcon(d.status)} ${d.label}${count}${excludedNote}${message}`);
     for (const detail of d.details?.slice(0, 6) ?? []) out.push(`${indent}    ${detail}`);
     if ((d.details?.length ?? 0) > 6) out.push(`${indent}    … ${(d.details?.length ?? 0) - 6} more`);
   }
@@ -236,8 +304,4 @@ function statusIcon(status: PluginDiscoveryStatus): string {
     case "not_found":
       return "-";
   }
-}
-
-function plural(n: number, singular: string): string {
-  return n === 1 ? singular : `${singular}s`;
 }

@@ -48,7 +48,13 @@ export class Vault {
     return this.values.length;
   }
 
-  /** Register additional values, e.g. from request-time detector plugins. */
+  /**
+   * Register additional values, e.g. from request-time detector plugins. The vault is name-blind, so
+   * it cannot apply registry-policy exclusions itself: that enforcement happens upstream where names
+   * are still known — `loadPluginRegistry` for launch values and `ProtectionEngine.admit()` for
+   * detector/caller-supplied values. Any new code path that registers named candidates must filter
+   * through `admit()` first, or excluded names will silently re-enter protection.
+   */
   register(values: ReadonlyArray<VaultValue>): number {
     let added = 0;
     for (const item of values) {

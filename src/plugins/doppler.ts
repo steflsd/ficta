@@ -69,6 +69,16 @@ export const dopplerPlugin: RegistrySourcePlugin = {
   kind: "registry-source",
   name: PLUGIN_NAME,
   description: "Loads exact secret values from Doppler at startup via the Doppler CLI",
+  registryPolicy: {
+    exclusions: [
+      {
+        id: "doppler-metadata-env-names",
+        kind: "env-name",
+        names: ["DOPPLER_CONFIG", "DOPPLER_ENVIRONMENT", "DOPPLER_PROJECT"],
+        reason: "Doppler routing/config metadata env vars are not secret material",
+      },
+    ],
+  },
   config: {
     envDefaults: {
       FICTA_REGISTRY_DOPPLER_ENABLED: "1",

@@ -22,6 +22,12 @@ code bypass the redaction boundary.
   secondary to registry-source exact matching.
 - **Agent-integration plugin** — teaches ficta how to launch a coding agent through the local proxy,
   such as Claude Code, Codex, or Pi.
+- **Registry policy contribution** — optional, safe metadata-only rules declared by the plugin that
+  owns a domain. These rules can exclude exact identifiers such as env var names from protection;
+  they never contain raw values or arbitrary code. Excluding a name is *un-protection* — the inverse
+  of the normal add-only contract — so core only enforces rules declared by trusted built-in
+  plugins, and applies them wherever a named candidate enters protection (registry load and
+  request-time detection alike). Rules from untrusted plugins are reported but not enforced.
 - **Provider adapter** — provider/wire-format routing and restore support. This is core-owned for
   now; new provider support should be discussed before a large PR.
 - **Addon** — a future packaging term for optional external code that may contain one or more
@@ -66,6 +72,11 @@ is the protected literal and must never be logged. `PluginDiscovery` is the safe
 print. Built-in `RegistryPluginConfig` / `RegistryPluginSetup` metadata lets each registry source
 own its TOML/env bindings and setup prompts. `AgentIntegration` returns a launch plan; the CLI still
 owns shim resolution, proxy lifecycle, and cleanup.
+
+`loadValues()` returns *candidates*, not the final protected set: core (`loadPluginRegistry` /
+`ProtectionEngine`) applies trusted registry-policy exclusions and the vault dedupes before anything
+is protected. A source's discovery count is therefore a candidate count and can exceed the protected
+total — the startup banner reconciles the difference (see "Launch-time discovery UX").
 
 ## Launch-time discovery UX
 
@@ -177,6 +188,14 @@ This is the source that protects values if the agent later runs `doppler ...`: t
 already registered before the model session starts. Loading `all` configs is explicit so a dev
 session does not silently pull prod secrets into RAM unless you ask for that coverage.
 
+The Doppler plugin also declares a registry-policy exclusion for Doppler-owned metadata env names:
+`DOPPLER_CONFIG`, `DOPPLER_ENVIRONMENT`, and `DOPPLER_PROJECT`. Because Doppler is a trusted built-in,
+core enforces that exclusion wherever a candidate by one of those names would enter protection, so
+the process-env source will not surrogate local routing/config labels. The exclusion is a precise
+negative override on top of the secret-ish heuristic — those names still match the heuristic, they
+are just dropped afterward. Credential variables such as `DOPPLER_TOKEN` are not on the exclusion
+list and remain protected by the normal `TOKEN` heuristic.
+
 ## Built-in registry source: `known-env-values`
 
 This plugin exposes two discovered sources:
@@ -218,9 +237,11 @@ mode = "secret-ish" # or "all"
 ```
 
 Secret-ish names are matched by a conservative name filter such as `KEY`, `TOKEN`, `SECRET`,
-`PASSWORD`, `JWT`, `DATABASE`, `OPENAI`, `ANTHROPIC`, `AWS`, `GITHUB`, and similar. Proxy-internal
-values that child agents do not need, such as `FICTA_SURROGATE_KEY`, are not passed to the child
-agent process.
+`PASSWORD`, `JWT`, `DATABASE`, `OPENAI`, `ANTHROPIC`, `AWS`, `GITHUB`, `DOPPLER`, and similar.
+Trusted provider-owned metadata exclusions from registry-policy contributions are then applied as a
+negative override, dropping precise non-secret names the heuristic matched. Proxy-internal values
+that child agents do not need, such as `FICTA_SURROGATE_KEY`, are not passed to the child agent
+process.
 
 ## Candidate registry sources (not built yet)
 

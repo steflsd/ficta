@@ -10,8 +10,10 @@ const ENV_KEYS = [
   "FICTA_REGISTRY_ENV_FILE_ENABLED",
   "FICTA_REGISTRY_ENV_FILE_PATHS",
   "FICTA_REGISTRY_PROCESS_ENV_ENABLED",
+  "FICTA_REGISTRY_PROCESS_ENV_MODE",
   "FICTA_REGISTRY_DOPPLER_ENABLED",
   "FICTA_REGISTRY_MIN_LEN",
+  "DOPPLER_CONFIG",
   "FICTA_REQUIRE_REGISTRY",
   "FICTA_FAIL_CLOSED",
   "FICTA_LOG_BODIES",
@@ -81,6 +83,25 @@ describe("ficta doctor", () => {
       severity: "error",
       message: "no protected values loaded, and FICTA_REQUIRE_REGISTRY=1 would block agent launch",
     });
+  });
+
+  it("annotates the excluding source and lists policy rules without a duplicate count line", () => {
+    const bin = tempDir("ficta-doctor-bin-");
+    executable(join(bin, "claude"));
+    process.env.PATH = bin;
+    process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+    process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "0";
+    process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "1";
+    process.env.FICTA_REGISTRY_PROCESS_ENV_MODE = "all";
+    process.env.FICTA_REGISTRY_MIN_LEN = "3";
+    process.env.DOPPLER_CONFIG = "local-routing-config";
+    process.env.FICTA_SURROGATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    const rendered = renderDoctorReport(collectDoctorReport({ agent: "claude" }));
+
+    expect(rendered).toContain("registry policy exclusions:");
+    expect(rendered).toMatch(/process env.*\(\d+ excluded by policy\)/);
+    expect(rendered).not.toContain("registry policy excluded:");
   });
 
   it("shows Codex ChatGPT/OAuth routing when auth.json indicates chatgpt mode", () => {

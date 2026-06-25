@@ -1,6 +1,9 @@
 export type ProtectedValueKind = "secret" | "pii" | "custom";
 export type ProtectionConfidence = "exact" | "high" | "probabilistic";
 export type ConfigBindingKind = "boolean" | "number" | "string" | "string-array-colon" | "string-array-comma";
+// Only env-name matching today. Future kinds may add source/namespace scoping so an exclusion can be
+// constrained to the declaring plugin's own domain rather than matching a name from any source.
+export type RegistryExclusionKind = "env-name";
 
 export interface ConfigBinding {
   env: string;
@@ -32,6 +35,37 @@ export interface RegistrySetupSource {
   defaultEnabled: boolean;
   enabledValues(ctx: RegistrySetupPromptContext): Promise<Record<string, string>> | Record<string, string>;
   disabledValues(ctx: RegistrySetupDiscoveryContext): Promise<Record<string, string>> | Record<string, string>;
+}
+
+/**
+ * Safe, metadata-only exclusion rule declared by the plugin that owns a domain — it names exact
+ * identifiers (for now, env var names) that are not secret material. This is an un-protection rule,
+ * so core only enforces it when the declaring plugin is trusted (see RegistryPolicy).
+ */
+export interface RegistryExclusionRule {
+  id: string;
+  kind: RegistryExclusionKind;
+  /** Exact safe identifiers only. For kind="env-name", env var names such as DOPPLER_CONFIG. */
+  names: readonly string[];
+  /** Safe explanation for diagnostics/docs. Never include protected values. */
+  reason: string;
+}
+
+/** Effective rule after core attaches the declaring plugin name and whether core enforces it. */
+export interface EffectiveRegistryExclusionRule extends RegistryExclusionRule {
+  plugin: string;
+  /** True when the declaring plugin is trusted (built-in). Untrusted rules are reported, not enforced. */
+  trusted: boolean;
+}
+
+/** Optional plugin contribution to registry policy. No raw values or executable predicates. */
+export interface RegistryPolicyContribution {
+  exclusions?: readonly RegistryExclusionRule[];
+}
+
+/** Core-owned effective policy used to filter named registry/detector candidates before protection. */
+export interface RegistryPolicy {
+  exclusions: readonly EffectiveRegistryExclusionRule[];
 }
 
 export interface RegistryPluginConfig {
@@ -135,6 +169,12 @@ export interface AgentIntegration {
 interface FictaPluginBase {
   name: string;
   description?: string;
+  /**
+   * Safe metadata-only registry policy owned by this plugin's domain. Core enforces it (only for
+   * trusted built-ins) wherever named candidates enter protection — registry load and request-time
+   * detection alike.
+   */
+  registryPolicy?: RegistryPolicyContribution;
 }
 
 /**
@@ -153,7 +193,12 @@ export interface RegistrySourcePlugin extends FictaPluginBase {
   /** Safe launch-time source discovery/status, printed before the agent starts. */
   discover(): readonly PluginDiscovery[];
 
-  /** Load exact registered values at startup (strongest exact-match layer). */
+  /**
+   * Load exact registered *candidates* at startup (strongest exact-match layer). These are not the
+   * final protected set: core (loadPluginRegistry / ProtectionEngine) applies trusted registry-policy
+   * exclusions and the vault dedupes, so a source's own count can exceed what actually enters
+   * protection.
+   */
   loadValues(): readonly ProtectedValue[];
 
   /** Optional detector/agent capabilities can coexist, but the registry contract remains required. */

@@ -34,6 +34,8 @@ const DEFAULT_ENV_FILE = ".env:.env.local";
 const DEFAULT_ENV_FILE_ENABLED = "1";
 const DEFAULT_PROCESS_ENV_ENABLED = "1";
 const DEFAULT_PROCESS_ENV_MODE = "secret-ish";
+// Positive secret-ish heuristic. Precise non-secret carve-outs (e.g. Doppler's DOPPLER_CONFIG
+// routing metadata) are handled by trusted registry-policy exclusions, not by narrowing this list.
 const SECRETISH_ENV_NAME =
   /(KEY|TOKEN|SECRET|PASSWORD|PASS|PWD|AUTH|BEARER|DATABASE|DB_URL|URL|JWT|PRIVATE|SIGNING|STRIPE|OPENAI|ANTHROPIC|AWS|GITHUB|DOPPLER|EMAIL|PHONE|IP)/i;
 

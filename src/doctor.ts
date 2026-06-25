@@ -9,7 +9,9 @@ import {
   agentIntegrations,
   loadPluginRegistry,
   type PluginDiscovery,
+  type RegistryPolicy,
   registryDiscoveryLines,
+  registryPolicyLines,
 } from "./plugins/index.js";
 import { configPath } from "./user-config.js";
 
@@ -35,6 +37,8 @@ export interface DoctorReport {
   registry: {
     protectedValues: number;
     discoveries: PluginDiscovery[];
+    policy: RegistryPolicy;
+    policyExcludedBySource: Record<string, number>;
   };
   agents: DoctorAgentReport[];
   issues: DoctorIssue[];
@@ -137,6 +141,8 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
     registry: {
       protectedValues: registry.values.length,
       discoveries: registry.discoveries,
+      policy: registry.registryPolicy,
+      policyExcludedBySource: registry.policyExcludedBySource,
     },
     agents: agentReports,
     issues,
@@ -179,7 +185,18 @@ export function renderDoctorReport(report: DoctorReport): string {
   lines.push(
     `  ${report.registry.protectedValues > 0 ? "✓" : "!"} protected values loaded: ${report.registry.protectedValues}`,
   );
-  for (const line of registryDiscoveryLines(report.registry.discoveries, "  ")) lines.push(line);
+  for (const line of registryDiscoveryLines(
+    report.registry.discoveries,
+    "  ",
+    report.registry.policyExcludedBySource,
+  )) {
+    lines.push(line);
+  }
+  const policyLines = registryPolicyLines(report.registry.policy, "  ");
+  if (policyLines.length > 0) {
+    lines.push("  registry policy exclusions:");
+    for (const line of policyLines) lines.push(line);
+  }
   lines.push("");
 
   lines.push("agents");

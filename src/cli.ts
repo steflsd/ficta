@@ -185,6 +185,9 @@ process.stderr.write(
     agentCommand: agent.command,
     baseUrl: base,
     discoveries: proxy.registry,
+    policyExcluded: proxy.policyExcluded,
+    policyExcludedBySource: proxy.policyExcludedBySource,
+    registryPolicy: proxy.registryPolicy,
     verbose: verbose || envFlag(process.env.FICTA_VERBOSE),
   }),
 );

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added trust-gated registry-policy exclusions: a plugin may declare safe metadata-only env-name exclusions, but core only enforces them for trusted built-ins and applies them at every named-value ingress (registry load, detector output, and caller-supplied values). The built-in Doppler plugin uses this to exclude `DOPPLER_CONFIG`/`DOPPLER_ENVIRONMENT`/`DOPPLER_PROJECT` metadata while `DOPPLER_TOKEN` stays protected by the secret-ish heuristic. The startup banner and `ficta doctor` now report enforced exclusions per source (e.g. `process env 95 (3 excluded)`) and account for them separately from dedupe in the loaded-vs-protected count; the verbose banner lists only enforced rules while `ficta doctor` also shows declared-but-untrusted ones. Policy validation rejects unknown fields and invalid env-name identifiers.
+
 ## 0.1.0-beta.3 - 2026-06-25
 
 - Updated Hono to 4.12.27 and Biome to 2.5.1.

@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  buildRegistryPolicy,
   loadPluginRegistry,
+  protectedValueExcludedBy,
+  registryDiscoveryLines,
   registrySetupDefaults,
   registrySetupSources,
   resetPluginCachesForTests,
@@ -23,6 +26,10 @@ const ENV_KEYS = [
   "FICTA_REGISTRY_DOPPLER_PROJECT",
   "FICTA_REGISTRY_DOPPLER_TIMEOUT_MS",
   "TEST_DOPPLER_API_KEY",
+  "DOPPLER_CONFIG",
+  "DOPPLER_ENVIRONMENT",
+  "DOPPLER_PROJECT",
+  "DOPPLER_TOKEN",
   "ANTHROPIC_API_KEY",
   "PATH",
 ] as const;
@@ -111,6 +118,28 @@ describe("registry plugin discovery", () => {
         } as any,
       ]),
     ).toThrow(/setup\.registrySources/);
+
+    expect(() =>
+      validatePluginBoundaries([
+        {
+          kind: "detector",
+          name: "bad-policy",
+          registryPolicy: { exclusions: [{ id: "raw", kind: "env-name", names: ["NAME"], value: "secret" }] },
+          detectText: () => [],
+        } as any,
+      ]),
+    ).toThrow(/unsupported field/);
+
+    expect(() =>
+      validatePluginBoundaries([
+        {
+          kind: "detector",
+          name: "bad-env-name",
+          registryPolicy: { exclusions: [{ id: "bad", kind: "env-name", names: ["not an env name"], reason: "x" }] },
+          detectText: () => [],
+        } as any,
+      ]),
+    ).toThrow(/exact env var names/);
   });
 
   it("keeps Doppler setup defaults owned by the Doppler registry plugin", () => {
@@ -308,5 +337,106 @@ exit 64
     expect(snapshot.values.some((v) => v.name === "TEST_DOPPLER_API_KEY")).toBe(true);
     expect(processEnv?.status).toBe("loaded");
     expect(processEnv?.message).toContain("secret-ish env names");
+  });
+
+  it("keeps Doppler metadata env vars out of process-env protection while preserving tokens", () => {
+    process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+    process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "1";
+    process.env.FICTA_REGISTRY_PROCESS_ENV_MODE = "all";
+    process.env.FICTA_REGISTRY_MIN_LEN = "3";
+    process.env.DOPPLER_CONFIG = "local-dev-routing-config";
+    process.env.DOPPLER_ENVIRONMENT = "dev";
+    process.env.DOPPLER_PROJECT = "api-project";
+    process.env.DOPPLER_TOKEN = "doppler-token-secret-value";
+
+    const snapshot = loadPluginRegistry();
+
+    expect(snapshot.values.some((v) => v.name === "DOPPLER_CONFIG")).toBe(false);
+    expect(snapshot.values.some((v) => v.name === "DOPPLER_ENVIRONMENT")).toBe(false);
+    expect(snapshot.values.some((v) => v.name === "DOPPLER_PROJECT")).toBe(false);
+    expect(snapshot.values.some((v) => v.name === "DOPPLER_TOKEN")).toBe(true);
+
+    // The exclusion is owned by the built-in Doppler plugin, so it is enforced.
+    const rule = snapshot.registryPolicy.exclusions.find((r) => r.id === "doppler-metadata-env-names");
+    expect(rule?.trusted).toBe(true);
+    expect(snapshot.policyExcluded).toBe(3);
+    // All three came from the process-env source, so the count is attributed there.
+    expect(snapshot.policyExcludedBySource["process-env"]).toBe(3);
+  });
+
+  it("annotates discovery lines with per-source policy exclusions", () => {
+    const lines = registryDiscoveryLines(
+      [
+        {
+          id: "known-env-values/process-env",
+          plugin: "known-env-values",
+          label: "process env",
+          status: "loaded",
+          valueCount: 5,
+        },
+      ],
+      "  ",
+      { "process-env": 2 },
+    );
+
+    expect(lines[0]).toContain("(2 excluded by policy)");
+  });
+
+  it("records but does not enforce registry exclusions from untrusted (non-built-in) plugins", () => {
+    const policyOwner = {
+      kind: "detector" as const,
+      name: "metadata-owner",
+      registryPolicy: {
+        exclusions: [
+          {
+            id: "metadata-name",
+            kind: "env-name" as const,
+            names: ["PUBLIC_METADATA"],
+            reason: "fixture metadata label",
+          },
+        ],
+      },
+      detectText: () => [],
+    };
+    const source = {
+      kind: "registry-source" as const,
+      name: "fixture-source",
+      config: { bindings: [], sections: [], envDefaults: {} },
+      setup: { registrySources: () => [] },
+      discover: () => [],
+      loadValues: () => [
+        { name: "PUBLIC_METADATA", value: "metadata-routing-label", source: "fixture" },
+        { name: "PRIVATE_TOKEN", value: "fixture-secret-token", source: "fixture" },
+      ],
+    };
+
+    const snapshot = loadPluginRegistry([policyOwner, source]);
+
+    // The rule is reported (so doctor can surface it) but un-protection is NOT honored for an
+    // untrusted plugin: PUBLIC_METADATA stays protected. This is the fail-closed fence.
+    const rule = snapshot.registryPolicy.exclusions.find((r) => r.id === "metadata-name");
+    expect(rule?.trusted).toBe(false);
+    expect(snapshot.policyExcluded).toBe(0);
+    expect(snapshot.values.some((value) => value.name === "PUBLIC_METADATA")).toBe(true);
+    expect(snapshot.values.some((value) => value.name === "PRIVATE_TOKEN")).toBe(true);
+  });
+
+  it("tags exclusions trusted only for plugins core vouches for", () => {
+    const owner = {
+      kind: "detector" as const,
+      name: "owner",
+      registryPolicy: { exclusions: [{ id: "x", kind: "env-name" as const, names: ["FOO"], reason: "r" }] },
+      detectText: () => [],
+    };
+
+    const trusted = buildRegistryPolicy([owner], new Set([owner]));
+    expect(trusted.exclusions[0]?.trusted).toBe(true);
+    expect(protectedValueExcludedBy({ name: "FOO" }, trusted)).toBeTruthy();
+
+    const untrusted = buildRegistryPolicy([owner], new Set());
+    expect(untrusted.exclusions[0]?.trusted).toBe(false);
+    expect(protectedValueExcludedBy({ name: "FOO" }, untrusted)).toBeUndefined();
+    // Diagnostics may still see untrusted rules via the explicit opt-in.
+    expect(protectedValueExcludedBy({ name: "FOO" }, untrusted, { includeUntrusted: true })).toBeTruthy();
   });
 });

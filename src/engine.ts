@@ -5,7 +5,8 @@ import {
   loadPluginRegistry,
   type PluginRegistrySnapshot,
   type ProtectedValue,
-  pluginsHaveDetectors,
+  protectedValueExcludedBy,
+  type RegistryPolicy,
 } from "./plugins/index.js";
 import { Vault } from "./vault.js";
 import type { Wire } from "./wire.js";
@@ -36,6 +37,7 @@ export class ProtectionEngine {
   private readonly plugins: readonly FictaPlugin[];
   private readonly hasDetectors: boolean;
   private readonly vault: Vault;
+  private readonly policy: RegistryPolicy;
 
   /** Safe launch-time snapshot of registry-source discovery. */
   readonly registry: PluginRegistrySnapshot;
@@ -45,9 +47,14 @@ export class ProtectionEngine {
 
   constructor(opts: ProtectionEngineOptions = {}) {
     this.plugins = opts.plugins ?? defaultPlugins;
-    this.hasDetectors = pluginsHaveDetectors(this.plugins);
     this.registry = loadPluginRegistry(this.plugins);
-    const values = [...this.registry.values, ...(opts.values ?? [])];
+    // loadPluginRegistry already ran validatePluginBoundaries, so derive this directly rather than
+    // calling pluginsHaveDetectors (which would re-validate every plugin).
+    this.hasDetectors = this.plugins.some((plugin) => Boolean(plugin.detectText));
+    this.policy = this.registry.registryPolicy;
+    // registry.values are already policy-filtered by loadPluginRegistry; caller-supplied opts.values
+    // pass through the same enforced exclusions so every ingress into the vault is consistent.
+    const values = [...this.registry.values, ...this.admit(opts.values ?? [])];
     this.registrySize = values.length;
     this.vault = new Vault(values);
   }
@@ -97,8 +104,14 @@ export class ProtectionEngine {
         continue;
       }
       if (detected.length === 0) continue;
-      added += this.vault.register(detected.map((value) => ({ ...value, plugin: value.plugin ?? plugin.name })));
+      const candidates = detected.map((value) => ({ ...value, plugin: value.plugin ?? plugin.name }));
+      added += this.vault.register(this.admit(candidates));
     }
     return added;
+  }
+
+  /** Drop named candidates excluded by an enforced (trusted) registry-policy rule. */
+  private admit(values: readonly ProtectedValue[]): ProtectedValue[] {
+    return values.filter((value) => !protectedValueExcludedBy(value, this.policy));
   }
 }

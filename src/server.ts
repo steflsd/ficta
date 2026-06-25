@@ -7,7 +7,13 @@ import { Hono } from "hono";
 import { loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
 import { ProtectionEngine } from "./engine.js";
 import { logRequest, logResponse, runDir } from "./log.js";
-import { type FictaPlugin, type PluginDiscovery, registryDiscoveryLines } from "./plugins/index.js";
+import {
+  type FictaPlugin,
+  type PluginDiscovery,
+  type RegistryPolicy,
+  registryDiscoveryLines,
+  registryPolicyLines,
+} from "./plugins/index.js";
 import { surrogateKeyWarning } from "./vault.js";
 import { wireOf } from "./wire.js";
 
@@ -15,6 +21,9 @@ export interface ProxyHandle {
   port: number;
   protectedValues: number;
   registry: PluginDiscovery[];
+  policyExcluded: number;
+  policyExcludedBySource: Record<string, number>;
+  registryPolicy: RegistryPolicy;
   keptCount: () => number;
   close: () => void;
 }
@@ -182,7 +191,18 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
           `  vault          ${engine.size} known value(s)  ${engine.enabled ? "🔒 redacting up, restoring back" : "⚠ NONE loaded — passthrough"}`,
         );
         console.log(`  registry`);
-        for (const line of registryDiscoveryLines(engine.registry.discoveries, "    ")) console.log(line);
+        for (const line of registryDiscoveryLines(
+          engine.registry.discoveries,
+          "    ",
+          engine.registry.policyExcludedBySource,
+        )) {
+          console.log(line);
+        }
+        const policyLines = registryPolicyLines(engine.registry.registryPolicy, "    ");
+        if (policyLines.length > 0) {
+          console.log(`  registry policy exclusions`);
+          for (const line of policyLines) console.log(line);
+        }
         if (keyWarning) console.log(`  key warning    ${keyWarning}`);
         console.log(`  fail-closed    ${cfg.failClosed ? "on" : "OFF (fail-open)"}`);
         console.log(`  run logs       ${runDir}${cfg.logBodies ? "  ⚠ raw bodies on" : ""}\n`);
@@ -194,6 +214,9 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
         port: info.port,
         protectedValues: engine.size,
         registry: engine.registry.discoveries,
+        policyExcluded: engine.registry.policyExcluded,
+        policyExcludedBySource: engine.registry.policyExcludedBySource,
+        registryPolicy: engine.registry.registryPolicy,
         keptCount: () => kept,
         close: () => server.close(),
       });
