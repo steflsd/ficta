@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.4 - 2026-06-26
 
 - Added a public `./plugins` entry point (`@steflsd/ficta/plugins`) exposing the plugin contract types and built-in plugin API, with TypeScript declaration output (`declaration: true`) so the types ship in the package.
 - Pruned dead code surfaced by `knip`: demoted ~26 internal-only symbols from exported to module-private, deleted two genuinely-unused helpers (`pluginsHaveDetectors`, `resetUserConfigForTests`), and removed stale barrel re-exports in `plugins/index.ts` and `log.ts`. `knip` now reports zero findings.
