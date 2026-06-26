@@ -5,7 +5,7 @@ import { loadUserConfig } from "./user-config.js";
 
 loadUserConfig();
 
-export const DEFAULT_UPSTREAMS = {
+const DEFAULT_UPSTREAMS = {
   anthropic: "https://api.anthropic.com",
   openai: "https://api.openai.com",
   // Codex on ChatGPT/OAuth auth talks to the ChatGPT backend, not the API.

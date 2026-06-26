@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a public `./plugins` entry point (`@steflsd/ficta/plugins`) exposing the plugin contract types and built-in plugin API, with TypeScript declaration output (`declaration: true`) so the types ship in the package.
+- Pruned dead code surfaced by `knip`: demoted ~26 internal-only symbols from exported to module-private, deleted two genuinely-unused helpers (`pluginsHaveDetectors`, `resetUserConfigForTests`), and removed stale barrel re-exports in `plugins/index.ts` and `log.ts`. `knip` now reports zero findings.
 - Added trust-gated registry-policy exclusions: a plugin may declare safe metadata-only env-name exclusions, but core only enforces them for trusted built-ins and applies them at every named-value ingress (registry load, detector output, and caller-supplied values). The built-in Doppler plugin uses this to exclude `DOPPLER_CONFIG`/`DOPPLER_ENVIRONMENT`/`DOPPLER_PROJECT` metadata while `DOPPLER_TOKEN` stays protected by the secret-ish heuristic. The startup banner and `ficta doctor` now report enforced exclusions per source (e.g. `process env 95 (3 excluded)`) and account for them separately from dedupe in the loaded-vs-protected count; the verbose banner lists only enforced rules while `ficta doctor` also shows declared-but-untrusted ones. Policy validation rejects unknown fields and invalid env-name identifiers.
 
 ## 0.1.0-beta.3 - 2026-06-25

@@ -47,7 +47,7 @@ function configSectionOrder(): ConfigSection[] {
 
 let loaded = false;
 
-export function defaultConfigPath(): string {
+function defaultConfigPath(): string {
   return join(homedir(), ".ficta", "config.toml");
 }
 
@@ -68,11 +68,6 @@ export function loadUserConfig(): void {
   for (const [key, value] of Object.entries(readUserConfig(path))) {
     process.env[key] ??= value;
   }
-}
-
-/** Test helper for modules that need to reload a temp config file in one process. */
-export function resetUserConfigForTests(): void {
-  loaded = false;
 }
 
 export function writeUserConfig(values: Record<string, string>, path = defaultConfigPath()): void {

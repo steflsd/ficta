@@ -18,16 +18,13 @@ import type {
 } from "./types.js";
 
 export {
-  builtInAgentPlugin,
   claudeAgent,
   codexAgent,
   codexPersistedFictaCleanupOverrides,
-  codexUsesChatgptAuth,
   piAgent,
   piProviderExtension,
 } from "./agents.js";
-export { dopplerPlugin, loadDopplerStats, resetDopplerPluginCacheForTests } from "./doppler.js";
-export { knownEnvPlugin, loadKnownEnvStats, resetKnownEnvPluginCacheForTests } from "./known-env.js";
+export { dopplerPlugin } from "./doppler.js";
 export { buildRegistryPolicy, protectedValueExcludedBy } from "./policy.js";
 export type {
   AgentBypassContext,
@@ -260,11 +257,6 @@ export function findAgentIntegration(
   plugins: readonly FictaPlugin[] = defaultPlugins,
 ): AgentIntegration | undefined {
   return agentIntegrations(plugins).find((agent) => agent.command === command);
-}
-
-export function pluginsHaveDetectors(plugins: readonly FictaPlugin[]): boolean {
-  validatePluginBoundaries(plugins);
-  return plugins.some((plugin) => Boolean(plugin.detectText));
 }
 
 export function resetPluginCachesForTests(): void {

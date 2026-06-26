@@ -27,8 +27,6 @@ const preview = (s: unknown, max: number) => {
   return flat.length > max ? flat.slice(0, max) + "…" : flat;
 };
 
-export { type Wire, wireOf } from "./wire.js";
-
 export function logRequest(args: {
   method: string;
   path: string;

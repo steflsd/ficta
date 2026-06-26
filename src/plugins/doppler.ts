@@ -4,16 +4,16 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { findExecutable } from "../install.js";
 import type { PluginDiscovery, ProtectedValue, RegistrySetupSource, RegistrySourcePlugin } from "./types.js";
 
-export type DopplerRegistryMode = "auto" | "enabled" | "disabled";
+type DopplerRegistryMode = "auto" | "enabled" | "disabled";
 type DopplerSetupConfigMode = "current" | "all";
 
-export interface DopplerConfigStat {
+interface DopplerConfigStat {
   label: string;
   loaded: number;
   status: "loaded" | "empty" | "error";
 }
 
-export interface DopplerStats {
+interface DopplerStats {
   mode: DopplerRegistryMode;
   command: string;
   timeoutMs: number;
@@ -102,7 +102,7 @@ export const dopplerPlugin: RegistrySourcePlugin = {
   loadValues: loadDopplerValues,
 };
 
-export function loadDopplerValues(): ProtectedValue[] {
+function loadDopplerValues(): ProtectedValue[] {
   const key = cacheKey();
   if (cachedValues && cachedKey === key) return cachedValues;
 
@@ -174,12 +174,12 @@ export function loadDopplerValues(): ProtectedValue[] {
   return values;
 }
 
-export function discoverDopplerSource(): PluginDiscovery[] {
+function discoverDopplerSource(): PluginDiscovery[] {
   const stats = loadDopplerStats();
   return [dopplerDiscovery(stats)];
 }
 
-export function loadDopplerStats(): DopplerStats {
+function loadDopplerStats(): DopplerStats {
   loadDopplerValues();
   return cachedStats ?? emptyStats();
 }

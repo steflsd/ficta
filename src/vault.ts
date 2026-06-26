@@ -181,7 +181,7 @@ interface SseRecord {
   eventName?: string;
 }
 
-export interface PendingSseFragment {
+interface PendingSseFragment {
   value: string;
   eventName?: string;
   flushData: (value: string) => Record<string, unknown>;

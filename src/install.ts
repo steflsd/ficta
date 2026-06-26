@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type ShimAgent = string;
+type ShimAgent = string;
 
 const MANAGED_BEGIN = "# >>> ficta shims >>>";
 const MANAGED_END = "# <<< ficta shims <<<";
@@ -37,19 +37,19 @@ export interface InstallShimsOptions {
   force?: boolean;
 }
 
-export interface ShimWriteResult {
+interface ShimWriteResult {
   agent: ShimAgent;
   path: string;
   status: "installed" | "unchanged" | "skipped-existing" | "skipped-launcher";
   realAgent?: string;
 }
 
-export interface LauncherWriteResult {
+interface LauncherWriteResult {
   path: string;
   status: "installed" | "unchanged" | "skipped-existing";
 }
 
-export interface LauncherRemoveResult {
+interface LauncherRemoveResult {
   path: string;
   status: "removed" | "missing" | "skipped-not-ficta";
 }
@@ -79,7 +79,7 @@ export function defaultShimDir(home = homedir()): string {
   return join(defaultFictaHome(home), "bin");
 }
 
-export function defaultFictaBin(): string {
+function defaultFictaBin(): string {
   // Source-tree/dev layout: src/install.ts -> ../bin/ficta.mjs.
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   return join(root, "bin", "ficta.mjs");
@@ -189,7 +189,7 @@ export function findExecutable(command: string, opts: FindExecutableOptions = {}
   return undefined;
 }
 
-export function shellRcPath(home = homedir(), shell = process.env.SHELL): string {
+function shellRcPath(home = homedir(), shell = process.env.SHELL): string {
   const base = shell?.split("/").pop() ?? "";
   if (base.includes("zsh")) return join(home, ".zshrc");
   if (base.includes("bash")) return join(home, ".bashrc");

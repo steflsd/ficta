@@ -1,6 +1,6 @@
 import { loadRegistryValues, type ProtectedValue } from "./plugins/index.js";
 
-export interface InspectionHit {
+interface InspectionHit {
   /** JSON-ish path to the string/key containing the registered value. */
   path: string;
   /** Safe labels whose values appeared at this path. Values are never included. */

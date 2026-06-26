@@ -44,7 +44,7 @@ export interface DoctorReport {
   issues: DoctorIssue[];
 }
 
-export interface DoctorAgentReport {
+interface DoctorAgentReport {
   command: string;
   label: string;
   selected: boolean;
@@ -56,7 +56,7 @@ export interface DoctorAgentReport {
   message: string;
 }
 
-export interface DoctorIssue {
+interface DoctorIssue {
   severity: "warning" | "error";
   message: string;
 }

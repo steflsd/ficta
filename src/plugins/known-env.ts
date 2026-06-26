@@ -1,16 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { PluginDiscovery, ProtectedValue, RegistrySetupSource, RegistrySourcePlugin } from "./types.js";
 
-export interface KnownEnvFileStat {
+interface KnownEnvFileStat {
   file: string;
   exists: boolean;
   loaded: number;
   error?: string;
 }
 
-export type KnownEnvProcessMode = "disabled" | "secret-ish" | "all";
+type KnownEnvProcessMode = "disabled" | "secret-ish" | "all";
 
-export interface KnownEnvStats {
+interface KnownEnvStats {
   loaded: number;
   loadedFromEnvFiles: number;
   loadedFromProcessEnv: number;
@@ -76,7 +76,7 @@ export const knownEnvPlugin: RegistrySourcePlugin = {
   loadValues: loadKnownEnvValues,
 };
 
-export function loadKnownEnvValues(): ProtectedValue[] {
+function loadKnownEnvValues(): ProtectedValue[] {
   const key = cacheKey();
   if (cachedValues && cachedKey === key) return cachedValues;
 
@@ -156,12 +156,12 @@ export function loadKnownEnvValues(): ProtectedValue[] {
   return cachedValues;
 }
 
-export function loadKnownEnvStats(): KnownEnvStats {
+function loadKnownEnvStats(): KnownEnvStats {
   loadKnownEnvValues();
   return cachedStats ?? emptyStats();
 }
 
-export function discoverKnownEnvSources(): PluginDiscovery[] {
+function discoverKnownEnvSources(): PluginDiscovery[] {
   const stats = loadKnownEnvStats();
   return [envFileDiscovery(stats), processEnvDiscovery(stats)];
 }

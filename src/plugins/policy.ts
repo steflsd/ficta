@@ -7,7 +7,7 @@ import type {
   RegistryPolicyContribution,
 } from "./types.js";
 
-export const EMPTY_REGISTRY_POLICY: RegistryPolicy = Object.freeze({ exclusions: Object.freeze([]) });
+const EMPTY_REGISTRY_POLICY: RegistryPolicy = Object.freeze({ exclusions: Object.freeze([]) });
 
 /**
  * Build the effective registry policy from plugin-declared domain facts. Plugins declare only safe
