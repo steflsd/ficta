@@ -1,4 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
+import { envFlag } from "./env-flags.js";
 
 /**
  * The vault: redact registered/detected values → surrogates on the way up, restore them on the
@@ -116,19 +117,59 @@ export class Vault {
   }
 
   /**
+   * Restore a JSON response body. Surrogates only ever sit inside JSON string literals/keys (they
+   * are substituted into strings on the way up), so they are swapped back in place with the restored
+   * value escaped for its string context. That keeps the document valid even when a restored value
+   * contains `"`, `\`, or a newline (a quoted password, a multi-line PEM key) — a raw `restoreText`
+   * would break the literal — while leaving every other byte untouched. A JSON.parse/JSON.stringify
+   * round-trip would instead silently round integers > 2^53 and reformat numbers. Falls back to raw
+   * text restore for bodies that are not valid JSON.
+   */
+  restoreJson(body: string): string {
+    if (this.toVal.size === 0 || !body) return body;
+    try {
+      JSON.parse(body);
+    } catch {
+      return this.restoreText(body);
+    }
+    return this.restoreJsonText(body);
+  }
+
+  /** In-place surrogate restore for JSON text, escaping each value for its string context. */
+  restoreJsonText(text: string): string {
+    if (this.toVal.size === 0 || !text) return text;
+    return text.replace(SUR_RE, (m) => {
+      const value = this.toVal.get(m);
+      return value === undefined ? m : jsonStringEscape(value);
+    });
+  }
+
+  /**
    * Fail-closed gate: how many registered/detected values are still present in an
-   * already-redacted outbound body/text. Must be 0 before we forward.
+   * already-redacted outbound body/text. Must be 0 before we forward. JSON redaction
+   * intentionally only mutates strings/keys so primitive numbers keep their type; the raw
+   * body backstop catches numeric-looking values that survived that semantic pass.
    */
   leakCount(body: string): number {
     if (this.size === 0 || !body) return 0;
     const strings: string[] = [];
+    let masked: string | undefined;
     try {
       collectStrings(JSON.parse(body), strings);
+      masked = maskJsonStringLiterals(body);
     } catch {
-      strings.push(body);
+      // Non-JSON: the whole raw body is scanned for any known value below.
     }
     let n = 0;
-    for (const v of this.values) if (strings.some((s) => containsKnownOutsidePaths(s, v))) n++;
+    for (const v of this.values) {
+      const stringLeak = strings.some((s) => containsKnownOutsidePaths(s, v));
+      // For valid JSON, string contents are masked out, so the backstop scans only primitives and
+      // matches a value as a complete token — never as a substring of a longer number (so a
+      // registered `12345678` is not flagged inside an unrelated `99912345678`).
+      const primitiveLeak =
+        masked === undefined ? containsKnownOutsidePaths(body, v) : containsKnownPrimitive(masked, v);
+      if (stringLeak || primitiveLeak) n++;
+    }
     return n;
   }
 
@@ -165,7 +206,11 @@ export class Vault {
    * until they can be restored. The vault owns only the generic, provider-agnostic SSE mechanics.
    */
   restoreEventStream(adapter: SseRestoreAdapter): TransformStream<Uint8Array, Uint8Array> {
-    return createSseRestoreStream((text) => this.restoreText(text), adapter);
+    return createSseRestoreStream(
+      (text) => this.restoreText(text),
+      (text) => this.restoreJsonText(text),
+      adapter,
+    );
   }
 }
 
@@ -204,6 +249,7 @@ export interface SseRestoreAdapter {
 
 function createSseRestoreStream(
   restoreText: (text: string) => string,
+  restoreJsonText: (text: string) => string,
   adapter: SseRestoreAdapter,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
@@ -223,12 +269,12 @@ function createSseRestoreStream(
         if (!boundary) break;
         const record = buf.slice(0, boundary.index + boundary.length);
         buf = buf.slice(boundary.index + boundary.length);
-        encode(restoreSseRecord(record, pending, restoreText, adapter), controller);
+        encode(restoreSseRecord(record, pending, restoreText, restoreJsonText, adapter), controller);
       }
     },
     flush(controller) {
       buf += decoder.decode();
-      if (buf) encode(restoreSseRecord(buf, pending, restoreText, adapter), controller);
+      if (buf) encode(restoreSseRecord(buf, pending, restoreText, restoreJsonText, adapter), controller);
       encode(flushPendingSseFragments(pending, restoreText), controller);
     },
   });
@@ -238,6 +284,7 @@ function restoreSseRecord(
   record: string,
   pending: Map<string, PendingSseFragment>,
   restoreText: (text: string) => string,
+  restoreJsonText: (text: string) => string,
   adapter: SseRestoreAdapter,
 ): string {
   const parsed = parseSseRecord(record);
@@ -260,7 +307,14 @@ function restoreSseRecord(
   }
 
   const fragments = adapter.fragments(data, parsed.eventName);
-  if (fragments.length === 0) return prefix + restoreText(record);
+  if (fragments.length === 0) {
+    // No incremental fragments to reassemble. If the event body parsed as JSON, restore surrogates
+    // inside its `data:` payload in place (escaping each restored value for its string context) so
+    // numbers and formatting survive untouched; otherwise fall back to a raw text restore.
+    return data === undefined
+      ? prefix + restoreText(record)
+      : prefix + renderSseRecordRawData(parsed, restoreJsonText(parsed.data ?? ""));
+  }
 
   for (const fragment of fragments) {
     const combined = (pending.get(fragment.key)?.value ?? "") + fragment.value;
@@ -271,7 +325,10 @@ function restoreSseRecord(
     fragment.setValue(emit);
   }
 
-  return prefix + renderSseJsonRecord(parsed, data);
+  // Fragment fields now hold restored text (any partial-surrogate tail lives in `pending`), so a
+  // deep restore over the parsed record only touches sibling fields the adapter does not name
+  // (e.g. an OpenAI delta's reasoning_content/refusal). JSON serialization re-escapes them.
+  return prefix + renderSseJsonRecord(parsed, mapStrings(data, restoreText));
 }
 
 function flushPendingSseFragments(
@@ -340,8 +397,13 @@ function parseSseField(line: string): SseField {
 }
 
 function renderSseJsonRecord(record: SseRecord, data: unknown): string {
+  return renderSseRecordRawData(record, JSON.stringify(data));
+}
+
+/** Re-render an SSE record, replacing its `data:` field(s) with already-serialized JSON text. */
+function renderSseRecordRawData(record: SseRecord, dataText: string): string {
   const lines = record.fields.filter((field) => field.name !== "data").map((field) => field.raw);
-  lines.push(`data: ${JSON.stringify(data)}`);
+  lines.push(`data: ${dataText}`);
   return `${lines.join("\n")}\n\n`;
 }
 
@@ -380,6 +442,34 @@ function replaceKnownOutsidePaths(text: string, needle: string, replacement: str
   return { text: out + text.slice(cursor), count };
 }
 
+/**
+ * Backstop leak check for a registered value that survives the string-only redaction pass as a bare
+ * JSON primitive (e.g. a number). `maskJsonStringLiterals` has already blanked every string's
+ * contents, so only primitives + structure remain; match `needle` as a complete token, never as a
+ * substring of a longer number (a registered `12345678` must not register inside `99912345678`).
+ */
+function containsKnownPrimitive(masked: string, needle: string): boolean {
+  if (!needle) return false;
+  let cursor = 0;
+  for (;;) {
+    const index = masked.indexOf(needle, cursor);
+    if (index === -1) return false;
+    if (!isTokenContinuation(masked[index - 1]) && !isTokenContinuation(masked[index + needle.length])) return true;
+    cursor = index + 1;
+  }
+}
+
+function isTokenContinuation(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z0-9_.+-]/.test(ch);
+}
+
+function jsonStringEscape(value: string): string {
+  // JSON.stringify yields a fully-escaped, quoted string literal; drop the surrounding quotes to get
+  // content safe to substitute inside an existing JSON string.
+  const json = JSON.stringify(value);
+  return json.slice(1, -1);
+}
+
 function containsKnownOutsidePaths(text: string, needle: string): boolean {
   if (!needle) return false;
   let cursor = 0;
@@ -415,8 +505,7 @@ function canPreservePathSegmentOccurrence(needle: string): boolean {
 }
 
 function redactPathsEnabled(): boolean {
-  const raw = process.env.FICTA_REDACT_PATHS?.toLowerCase();
-  return raw === "1" || raw === "true" || raw === "on" || raw === "enabled";
+  return envFlag(process.env.FICTA_REDACT_PATHS);
 }
 
 function tokenBounds(text: string, start: number, end: number): [number, number] {
@@ -485,6 +574,42 @@ function mapStrings(value: unknown, fn: (s: string) => string): unknown {
     return out;
   }
   return value;
+}
+
+function maskJsonStringLiterals(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+
+  for (const ch of text) {
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+
+    if (escaped) {
+      out += " ";
+      escaped = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      out += " ";
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+
+    out += " ";
+  }
+
+  return out;
 }
 
 function collectStrings(value: unknown, out: string[]): void {

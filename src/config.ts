@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultLogDir } from "./defaults.js";
+import { envFlag } from "./env-flags.js";
 import { loadUserConfig } from "./user-config.js";
 
 loadUserConfig();
@@ -121,11 +122,6 @@ function expandHome(path: string): string {
   return path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 }
 
-function envFlag(value: string | undefined): boolean {
-  const raw = value?.toLowerCase();
-  return raw === "1" || raw === "true" || raw === "on" || raw === "yes" || raw === "enabled";
-}
-
 function boundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
   const n = Number(value ?? fallback);
   if (!Number.isFinite(n)) return fallback;
@@ -134,5 +130,14 @@ function boundedInt(value: string | undefined, fallback: number, min: number, ma
 
 function isLoopbackHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  return normalized === "localhost" || normalized === "::1" || normalized.startsWith("127.");
+  if (normalized === "localhost" || normalized === "::1") return true;
+  // Only a real IPv4 literal in 127.0.0.0/8 is loopback. A bare prefix check would also accept
+  // registrable DNS names like "127.0.0.1.attacker.example" or "127.foo.com", which resolve to
+  // arbitrary public IPs and would let provider auth headers be forwarded off-box over plain HTTP.
+  // Shorthand forms (127.1, 0x7f000001, 2130706433) need no special-casing here: the only caller
+  // passes `new URL(target).hostname`, which has already normalized them to dotted-quad 127.0.0.1.
+  const octets = normalized.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!octets) return false;
+  const parts = octets.slice(1).map(Number);
+  return parts.every((part) => part <= 255) && parts[0] === 127;
 }

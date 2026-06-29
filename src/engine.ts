@@ -84,6 +84,10 @@ export class ProtectionEngine {
     return this.vault.restoreText(text);
   }
 
+  restoreJson(body: string): string {
+    return this.vault.restoreJson(body);
+  }
+
   restoreStream(): TransformStream<Uint8Array, Uint8Array> {
     return this.vault.restoreStream();
   }

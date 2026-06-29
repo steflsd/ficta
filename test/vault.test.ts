@@ -68,6 +68,14 @@ describe("vault", () => {
     expect(v.leakCount(v.redactBody(body).body)).toBe(0);
   });
 
+  it("fail-closed gate catches registered values in JSON number primitives", () => {
+    const vault = new Vault([{ value: "12345678" }]);
+    const redacted = vault.redactBody(JSON.stringify({ pin: 12345678 }));
+
+    expect(redacted).toEqual({ body: JSON.stringify({ pin: 12345678 }), count: 0 });
+    expect(vault.leakCount(redacted.body)).toBe(1);
+  });
+
   it("redacts a value living inside a longer string", () => {
     const body = JSON.stringify({ content: "DATABASE_URL=postgres://u:longpassword@host:5432/db end" });
     expect(v.redactBody(body).body).not.toContain("longpassword");
@@ -162,6 +170,55 @@ describe("vault", () => {
     expect(vault.leakCount(red)).toBe(0);
   });
 
+  it("restoreJson re-escapes restored values containing JSON-special characters", () => {
+    const secret = 'p@ss"word\\\nwith-newline';
+    const vault = new Vault([{ value: secret }]);
+    const surrogate = vault.redactText(secret).text;
+    const wire = JSON.stringify({ content: surrogate });
+
+    const restored = vault.restoreJson(wire);
+    // Must still be valid JSON, and round-trip back to the real value.
+    expect(() => JSON.parse(restored)).not.toThrow();
+    expect((JSON.parse(restored) as { content: string }).content).toBe(secret);
+    expect(restored).not.toContain(surrogate);
+  });
+
+  it("restoreJson falls back to raw text restore for non-JSON bodies", () => {
+    const { body: red } = v.redactBody(JSON.stringify({ x: AWS }));
+    const sur = red.match(/FICTA_[0-9a-f]{32}/)?.[0] ?? "";
+    expect(v.restoreJson(`not json but has ${sur}`)).toContain(AWS);
+  });
+
+  it("restoreJson preserves number primitives byte-for-byte instead of round-tripping them", () => {
+    // 9007199254740993 (2^53 + 1) cannot survive JSON.parse → JSON.stringify; the in-place restore
+    // must leave it — and other number formatting — exactly as received.
+    const body = '{"id":9007199254740993,"ratio":1.0,"scaled":1e3}';
+    expect(v.restoreJson(body)).toBe(body);
+  });
+
+  it("fail-closed gate does not flag a registered number that is a substring of a larger number", () => {
+    const vault = new Vault([{ value: "12345678" }]);
+    expect(vault.leakCount(JSON.stringify({ amount: 99912345678 }))).toBe(0);
+    // …but a standalone primitive equal to the value is still caught.
+    expect(vault.leakCount(JSON.stringify({ pin: 12345678 }))).toBe(1);
+  });
+
+  it("FICTA_REDACT_PATHS=yes is honored the same as =1", () => {
+    const before = process.env.FICTA_REDACT_PATHS;
+    process.env.FICTA_REDACT_PATHS = "yes";
+    try {
+      const vault = new Vault([{ value: "eu-central-1" }]);
+      const path = "/Users/alice/src/acme/eu-central-1-prod";
+      const { body: red, count } = vault.redactBody(JSON.stringify({ cwd: path }));
+
+      expect(count).toBe(1);
+      expect(red).not.toContain(path);
+    } finally {
+      if (before === undefined) delete process.env.FICTA_REDACT_PATHS;
+      else process.env.FICTA_REDACT_PATHS = before;
+    }
+  });
+
   it("FICTA_REDACT_PATHS=1 opts back into path redaction", () => {
     const before = process.env.FICTA_REDACT_PATHS;
     process.env.FICTA_REDACT_PATHS = "1";
@@ -228,6 +285,52 @@ describe("vault", () => {
     expect(toolInput).toContain(`"oldText":"${secret}"`);
     expect(toolInput).not.toContain(surrogate);
     expect(toolInput).not.toContain("FICTA_");
+  });
+
+  it("SSE restore also restores surrogates in sibling delta fields the adapter does not name", async () => {
+    const secret = "corova-control-plane";
+    const vault = new Vault([{ value: secret }]);
+    const surrogate = vault.redactText(secret).text;
+    // delta.content is a named fragment; delta.reasoning_content is a sibling the adapter ignores.
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "ok", reasoning_content: surrogate } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+
+    const out = await transformText(vault.restoreEventStream(sseRestoreAdapterFor("openai-chat")), [sse]);
+    const reasoning = streamedJsonData(out)
+      .flatMap((event) => event?.choices ?? [])
+      .map((choice) => choice?.delta?.reasoning_content ?? "")
+      .join("");
+
+    expect(reasoning).toBe(secret);
+    expect(out).not.toContain("FICTA_");
+  });
+
+  it("NOOP-wire SSE restore restores whole surrogates and re-escapes JSON-special values", async () => {
+    const secret = 'tok"en\\value';
+    const vault = new Vault([{ value: secret }]);
+    const surrogate = vault.redactText(secret).text;
+    const sse = `data: ${JSON.stringify({ note: surrogate })}\n\n`;
+
+    const out = await transformText(vault.restoreEventStream(sseRestoreAdapterFor("unknown")), [sse]);
+    const note = streamedJsonData(out)
+      .map((event) => event?.note ?? "")
+      .join("");
+
+    expect(note).toBe(secret);
+    expect(out).not.toContain("FICTA_");
+  });
+
+  it("NOOP-wire SSE restore preserves large integers in non-fragment event bodies", async () => {
+    const vault = new Vault([{ value: "corova-control-plane" }]);
+    // Built as raw text: a JS number literal would already round 2^53 + 1 before we could send it.
+    const sse = 'data: {"id":9007199254740993,"usage":{"input_tokens":4503599627370497}}\n\n';
+
+    const out = await transformText(vault.restoreEventStream(sseRestoreAdapterFor("unknown")), [sse]);
+
+    expect(out).toContain('"id":9007199254740993');
+    expect(out).toContain('"input_tokens":4503599627370497');
   });
 
   it("SSE restore reassembles OpenAI Responses tool-call argument deltas split across events", async () => {

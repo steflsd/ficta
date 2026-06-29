@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sanitizeAgentEnv } from "./child-env.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
+import { envFlag } from "./env-flags.js";
 import { isGloballyDisabled, setGlobalDisabled } from "./global-disable.js";
 import { defaultShimDir, findExecutable, installShims, uninstallShims } from "./install.js";
 import { agentCommands, findAgentIntegration } from "./plugins/index.js";
@@ -333,11 +334,6 @@ function extractFictaFlags(argv: string[]): { rest: string[]; allowEmpty: boolea
     else rest.push(arg);
   }
   return { rest, allowEmpty, verbose };
-}
-
-function envFlag(value: string | undefined): boolean {
-  const raw = value?.toLowerCase();
-  return raw === "1" || raw === "true" || raw === "on" || raw === "yes" || raw === "enabled";
 }
 
 function resolveAgentExecutable(command: string): string | undefined {

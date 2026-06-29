@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { RegistrySourcePlugin } from "../src/plugins/index.js";
 
 const AWS = "AKIAIOSFODNN7EXAMPLE";
 
@@ -96,6 +97,69 @@ describe("proxy hardening", () => {
       expect(meta).not.toContain(AWS);
       expect(meta).toContain('"keyCount"');
       expect(meta).toContain('"modelSet"');
+    } finally {
+      proxy?.close();
+      await close(upstream);
+      for (const [k, v] of Object.entries(originalEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("fail-closes instead of forwarding registered numeric JSON primitives", async () => {
+    const originalEnv = {
+      FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
+      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
+      FICTA_SILENT: process.env.FICTA_SILENT,
+    };
+
+    let upstreamHit = false;
+    const upstream = createServer((_req, res) => {
+      upstreamHit = true;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+
+    const numericPlugin: RegistrySourcePlugin = {
+      kind: "registry-source",
+      name: "numeric-fixture",
+      config: { bindings: [], sections: [], envDefaults: {} },
+      setup: { registrySources: () => [] },
+      discover: () => [],
+      loadValues: () => [
+        {
+          name: "NUMERIC_SECRET",
+          value: "12345678",
+          source: "fixture",
+          kind: "secret",
+          confidence: "exact",
+        },
+      ],
+    };
+
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      const upstreamPort = await listen(upstream);
+      process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
+      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
+      process.env.FICTA_SILENT = "1";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({ port: 0, plugins: [numericPlugin] });
+
+      const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pin: 12345678 }),
+      });
+      const payload = (await res.json()) as { error?: { type?: string } };
+
+      expect(res.status).toBe(403);
+      expect(payload.error?.type).toBe("ficta_blocked");
+      expect(upstreamHit).toBe(false);
     } finally {
       proxy?.close();
       await close(upstream);
@@ -372,6 +436,125 @@ describe("proxy hardening", () => {
       expect(receivedUrl).not.toContain(AWS);
       expect(receivedUrl).toMatch(/token=FICTA_[0-9a-f]{32}/);
       expect(text).toContain(AWS);
+    } finally {
+      proxy?.close();
+      await close(upstream);
+      for (const [k, v] of Object.entries(originalEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("redacts a registered secret that is percent-encoded in the query string", async () => {
+    const secret = "secret value with spaces";
+    const originalEnv = {
+      FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
+      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
+      FICTA_SILENT: process.env.FICTA_SILENT,
+    };
+
+    let receivedUrl = "";
+    const upstream = createServer((req, res) => {
+      receivedUrl = req.url ?? "";
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+    });
+
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      const upstreamPort = await listen(upstream);
+      process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
+      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
+      process.env.FICTA_SILENT = "1";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({
+        port: 0,
+        plugins: [
+          {
+            kind: "registry-source",
+            name: "fixture-registry",
+            config: { bindings: [], sections: [], envDefaults: {} },
+            setup: { registrySources: () => [] },
+            discover: () => [],
+            loadValues: () => [
+              { name: "FIXTURE_SECRET", value: secret, source: "fixture", kind: "secret", confidence: "exact" },
+            ],
+          },
+        ],
+      });
+
+      const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/messages?token=${encodeURIComponent(secret)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "no body secret" }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      // The secret survived percent-encoding in the wire query, but must not reach the upstream
+      // in any form — decoded or encoded.
+      expect(receivedUrl).not.toContain(encodeURIComponent(secret));
+      expect(decodeURIComponent(receivedUrl)).not.toContain(secret);
+      expect(receivedUrl).toMatch(/token=FICTA_[0-9a-f]{32}/);
+    } finally {
+      proxy?.close();
+      await close(upstream);
+      for (const [k, v] of Object.entries(originalEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("preserves the wire encoding of query parameters it does not redact", async () => {
+    const originalEnv = {
+      FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
+      FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
+      FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
+      FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
+      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
+      FICTA_SILENT: process.env.FICTA_SILENT,
+    };
+
+    let receivedUrl = "";
+    const upstream = createServer((req, res) => {
+      receivedUrl = req.url ?? "";
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+    });
+
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      const upstreamPort = await listen(upstream);
+      process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
+      process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
+      process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
+      process.env.FICTA_REGISTRY_MIN_LEN = "6";
+      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
+      process.env.FICTA_SILENT = "1";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({ port: 0 });
+
+      // `sig` carries an encoding (%20 space, %2B literal plus) that whole-query re-encoding would
+      // mangle; only the `token` parameter holding a registered secret should change.
+      const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/messages?token=${AWS}&sig=a%20b%2Bc`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "no body secret" }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      expect(receivedUrl).toMatch(/token=FICTA_[0-9a-f]{32}/);
+      expect(receivedUrl).not.toContain(AWS);
+      expect(receivedUrl).toContain("sig=a%20b%2Bc");
     } finally {
       proxy?.close();
       await close(upstream);

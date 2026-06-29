@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseBoolean } from "./env-flags.js";
 import { pluginConfigBindings, pluginConfigSections } from "./plugins/index.js";
 import type { ConfigBinding, ConfigBindingKind, ConfigSection } from "./plugins/types.js";
 
@@ -200,13 +201,6 @@ function tomlValueToEnv(value: TomlValue | TomlTable, kind: ConfigBindingKind): 
     case "string":
       return String(value);
   }
-}
-
-function parseBoolean(value: string): boolean | undefined {
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "on", "enabled", "yes"].includes(normalized)) return true;
-  if (["0", "false", "off", "disabled", "no"].includes(normalized)) return false;
-  return undefined;
 }
 
 function getTable(root: TomlTable, path: readonly string[]): TomlTable | undefined {

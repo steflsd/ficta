@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { envEnabled } from "../env-flags.js";
 import type { PluginDiscovery, ProtectedValue, RegistrySetupSource, RegistrySourcePlugin } from "./types.js";
 
 interface KnownEnvFileStat {
@@ -36,8 +37,20 @@ const DEFAULT_PROCESS_ENV_ENABLED = "1";
 const DEFAULT_PROCESS_ENV_MODE = "secret-ish";
 // Positive secret-ish heuristic. Precise non-secret carve-outs (e.g. Doppler's DOPPLER_CONFIG
 // routing metadata) are handled by trusted registry-policy exclusions, not by narrowing this list.
+// `PWD` matches every credential abbreviation form (DB_PWD, MYSQLPWD, ADMINPWD, PWDHASH, …); the
+// only `PWD`-bearing names that are NOT secrets are the shell's own working-directory vars, which
+// are excluded by exact name below rather than by removing `PWD` from this list.
 const SECRETISH_ENV_NAME =
   /(KEY|TOKEN|SECRET|PASSWORD|PASS|PWD|AUTH|BEARER|DATABASE|DB_URL|URL|JWT|PRIVATE|SIGNING|STRIPE|OPENAI|ANTHROPIC|AWS|GITHUB|DOPPLER|EMAIL|PHONE|IP)/i;
+
+// Shell-provided working-directory vars contain `PWD` but are paths, not secrets; excluding them by
+// exact name keeps the broad `PWD` match above from registering the cwd as a protected value.
+const SHELL_NON_SECRET_ENV_NAMES = new Set(["PWD", "OLDPWD"]);
+
+function isSecretishEnvName(name: string): boolean {
+  if (SHELL_NON_SECRET_ENV_NAMES.has(name.toUpperCase())) return false;
+  return SECRETISH_ENV_NAME.test(name);
+}
 
 let cachedKey: string | undefined;
 let cachedValues: ProtectedValue[] | undefined;
@@ -141,7 +154,7 @@ function loadKnownEnvValues(): ProtectedValue[] {
         stats.skippedEmpty++;
         continue;
       }
-      if (stats.processEnvMode !== "all" && !SECRETISH_ENV_NAME.test(name)) {
+      if (stats.processEnvMode !== "all" && !isSecretishEnvName(name)) {
         stats.skippedNameFilter++;
         continue;
       }
@@ -183,7 +196,7 @@ function envFileSetupSource(env: NodeJS.ProcessEnv): RegistrySetupSource {
   return {
     id: `${PLUGIN_NAME}/env-file`,
     label,
-    defaultEnabled: enabled(env.FICTA_REGISTRY_ENV_FILE_ENABLED, true),
+    defaultEnabled: envEnabled(env.FICTA_REGISTRY_ENV_FILE_ENABLED, true),
     async enabledValues(ctx) {
       const paths = await ctx.promptText(
         "Env files to load",
@@ -330,7 +343,7 @@ function emptyStats(): KnownEnvStats {
 }
 
 function registryEnvFilesEnabled(): boolean {
-  return enabled(process.env.FICTA_REGISTRY_ENV_FILE_ENABLED, DEFAULT_ENV_FILE_ENABLED === "1");
+  return envEnabled(process.env.FICTA_REGISTRY_ENV_FILE_ENABLED, DEFAULT_ENV_FILE_ENABLED === "1");
 }
 
 function registryEnvFileSetting(): string {
@@ -344,7 +357,7 @@ function registryMinLen(): number {
 }
 
 function registryProcessEnvEnabled(): boolean {
-  return enabled(process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED, DEFAULT_PROCESS_ENV_ENABLED === "1");
+  return envEnabled(process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED, DEFAULT_PROCESS_ENV_ENABLED === "1");
 }
 
 function registryProcessEnvMode(): KnownEnvProcessMode {
@@ -364,7 +377,7 @@ function cacheKey(): string {
 function countSecretishProcessEnvCandidates(): number {
   let n = 0;
   for (const [name, value] of Object.entries(process.env)) {
-    if (value && SECRETISH_ENV_NAME.test(name)) n++;
+    if (value && isSecretishEnvName(name)) n++;
   }
   return n;
 }
@@ -449,13 +462,6 @@ function stripComment(value: string): string {
     }
   }
   return value;
-}
-
-function enabled(value: string | undefined, fallback: boolean): boolean {
-  const normalized = value?.trim().toLowerCase();
-  if (["0", "false", "off", "disabled", "no"].includes(normalized ?? "")) return false;
-  if (["1", "true", "on", "enabled", "yes"].includes(normalized ?? "")) return true;
-  return fallback;
 }
 
 function skippedOnlyMessage(stats: KnownEnvStats): string | undefined {

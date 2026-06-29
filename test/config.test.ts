@@ -48,6 +48,27 @@ describe("config hardening", () => {
     ).toBeUndefined();
   });
 
+  it("treats only real 127.0.0.0/8 literals as loopback, not lookalike DNS names", () => {
+    const cfg = { ...loadConfig(), allowCustomUpstream: false };
+
+    // Genuine loopback literals bypass the custom-upstream gate.
+    expect(upstreamPolicyIssue(cfg, "http://127.0.0.1:9000/v1/messages")).toBeUndefined();
+    expect(upstreamPolicyIssue(cfg, "http://127.1.2.3:9000/v1/messages")).toBeUndefined();
+    // Shorthand IPv4 loopback forms are normalized to dotted-quad by URL parsing, so they too pass.
+    expect(upstreamPolicyIssue(cfg, "http://127.1:9000/v1/messages")).toBeUndefined();
+    expect(upstreamPolicyIssue(cfg, "http://2130706433:9000/v1/messages")).toBeUndefined();
+
+    // Registrable names that merely start with "127." resolve to public IPs and must be gated.
+    expect(upstreamPolicyIssue(cfg, "http://127.0.0.1.attacker.example/v1/messages")).toContain(
+      "FICTA_ALLOW_CUSTOM_UPSTREAM=1",
+    );
+    expect(upstreamPolicyIssue(cfg, "http://127.foo.com/v1/messages")).toContain("FICTA_ALLOW_CUSTOM_UPSTREAM=1");
+    // …and even when custom upstreams are allowed, they still must use https.
+    expect(
+      upstreamPolicyIssue({ ...cfg, allowCustomUpstream: true }, "http://127.0.0.1.attacker.example/v1/messages"),
+    ).toContain("must use https");
+  });
+
   it("persists user config as TOML and reads it as effective settings", () => {
     const dir = mkdtempSync(join(tmpdir(), "ficta-config-"));
     const path = join(dir, "config.toml");

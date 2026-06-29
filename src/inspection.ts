@@ -25,7 +25,7 @@ export function registeredValueCount(): number {
 }
 
 export function inspectJson(value: unknown): InspectionReport {
-  const hits = collectHits((emit) => walkStrings(value, emit));
+  const hits = collectHits((emit, values) => walkStrings(value, emit, values));
   return makeReport(hits);
 }
 
@@ -36,14 +36,14 @@ export function inspectText(text: string, path = "$raw"): InspectionReport {
 
 /** Parse SSE `data:` JSON lines and inspect their string fields by event index/path. */
 export function inspectSse(raw: string): InspectionReport {
-  const hits = collectHits((emit) => {
+  const hits = collectHits((emit, values) => {
     let i = 0;
     for (const line of raw.split("\n")) {
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       if (!data || data === "[DONE]") continue;
       try {
-        walkStrings(JSON.parse(data), emit, `sse[${i}]`);
+        walkStrings(JSON.parse(data), emit, values, `sse[${i}]`);
       } catch {
         emit(data, `sse[${i}]`);
       }
@@ -78,7 +78,9 @@ function makeReport(hits: InspectionHit[]): InspectionReport {
   };
 }
 
-function collectHits(walk: (emit: (s: string, path: string) => void) => void): InspectionHit[] {
+function collectHits(
+  walk: (emit: (s: string, path: string) => void, values: ProtectedValue[]) => void,
+): InspectionHit[] {
   const values = registeredValues();
   if (values.length === 0) return [];
 
@@ -92,35 +94,40 @@ function collectHits(walk: (emit: (s: string, path: string) => void) => void): I
         byPath.set(path, names);
       }
     }
-  });
+  }, values);
 
   return [...byPath.entries()].map(([path, names]) => ({ path, names: [...names].sort() }));
 }
 
-function walkStrings(value: unknown, emit: (s: string, path: string) => void, path = "$"): void {
+function walkStrings(
+  value: unknown,
+  emit: (s: string, path: string) => void,
+  values: ProtectedValue[],
+  path = "$",
+): void {
   if (typeof value === "string") {
     emit(value, path);
     return;
   }
   if (Array.isArray(value)) {
     for (const [i, v] of value.entries()) {
-      walkStrings(v, emit, `${path}[${i}]`);
+      walkStrings(v, emit, values, `${path}[${i}]`);
     }
     return;
   }
   if (value && typeof value === "object") {
     let i = 0;
     for (const [k, v] of Object.entries(value)) {
-      const childPath = path === "$" ? safePathSegment(k, i) : `${path}.${safePathSegment(k, i)}`;
+      const childPath = path === "$" ? safePathSegment(k, i, values) : `${path}.${safePathSegment(k, i, values)}`;
       emit(k, `${childPath}.$key`);
-      walkStrings(v, emit, childPath);
+      walkStrings(v, emit, values, childPath);
       i++;
     }
   }
 }
 
-function safePathSegment(key: string, index: number): string {
-  const containsRegisteredValue = registeredValues().some((protectedValue) => key.includes(protectedValue.value));
+function safePathSegment(key: string, index: number, values: ProtectedValue[]): string {
+  const containsRegisteredValue = values.some((protectedValue) => key.includes(protectedValue.value));
   if (containsRegisteredValue) return `<key#${index}>`;
   return /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(key) ? key : `<key#${index}>`;
 }

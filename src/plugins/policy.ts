@@ -1,3 +1,4 @@
+import { isRecord } from "../vault.js";
 import type {
   EffectiveRegistryExclusionRule,
   FictaPlugin,
@@ -108,8 +109,4 @@ function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string
 
 function exclusionKey(pluginName: string, rule: RegistryExclusionRule): string {
   return `${pluginName}\0${rule.id}\0${rule.kind}\0${[...rule.names].sort().join("\0")}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

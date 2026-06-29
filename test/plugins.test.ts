@@ -32,6 +32,10 @@ const ENV_KEYS = [
   "DOPPLER_TOKEN",
   "ANTHROPIC_API_KEY",
   "PATH",
+  "PWD",
+  "OLDPWD",
+  "DB_PWD",
+  "ADMINPWD",
 ] as const;
 
 let originalEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
@@ -217,6 +221,25 @@ describe("registry plugin discovery", () => {
     }
   });
 
+  it("refuses a world-writable Doppler executable", () => {
+    const bin = mkdtempSync(join(tmpdir(), "ficta-doppler-world-writable-"));
+    const command = join(bin, "doppler");
+    writeFileSync(command, "#!/bin/sh\nprintf '%s\\n' '{\"DOPPLER_SECRET\":\"should-not-load\"}'\n", { mode: 0o722 });
+    chmodSync(command, 0o722);
+
+    process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+    process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "1";
+    process.env.FICTA_REGISTRY_DOPPLER_COMMAND = command;
+
+    const snapshot = loadPluginRegistry();
+    const doppler = snapshot.discoveries.find((d) => d.id === "doppler-cli/secrets-download");
+
+    expect(snapshot.values.some((v) => v.value === "should-not-load")).toBe(false);
+    expect(doppler?.status).toBe("error");
+    expect(doppler?.message).toContain("untrusted Doppler command");
+    expect(doppler?.message).toContain("world-writable executable");
+  });
+
   it("runs Doppler with a minimal child environment", () => {
     const secret = "doppler-provider-fixture-secret-value";
     const bin = mkdtempSync(join(tmpdir(), "ficta-doppler-env-test-"));
@@ -337,6 +360,26 @@ exit 64
     expect(snapshot.values.some((v) => v.name === "TEST_DOPPLER_API_KEY")).toBe(true);
     expect(processEnv?.status).toBe("loaded");
     expect(processEnv?.message).toContain("secret-ish env names");
+  });
+
+  it("does not register the shell PWD/OLDPWD (working directory) as a secret-ish value", () => {
+    process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+    process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "1";
+    process.env.FICTA_REGISTRY_PROCESS_ENV_MODE = "secret-ish";
+    process.env.FICTA_REGISTRY_MIN_LEN = "3";
+    process.env.PWD = "/Users/alice/src/secret-looking-project";
+    process.env.OLDPWD = "/Users/alice/elsewhere";
+    process.env.DB_PWD = "db-password-value";
+    process.env.ADMINPWD = "admin-password-value";
+
+    const snapshot = loadPluginRegistry();
+
+    // Only the exact shell working-directory vars are excluded…
+    expect(snapshot.values.some((v) => v.name === "PWD")).toBe(false);
+    expect(snapshot.values.some((v) => v.name === "OLDPWD")).toBe(false);
+    // …every other `PWD`-bearing credential name stays covered, with or without an underscore.
+    expect(snapshot.values.some((v) => v.name === "DB_PWD")).toBe(true);
+    expect(snapshot.values.some((v) => v.name === "ADMINPWD")).toBe(true);
   });
 
   it("keeps Doppler metadata env vars out of process-env protection while preserving tokens", () => {

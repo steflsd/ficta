@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { envEnabled, parseBoolean } from "../env-flags.js";
 import { findExecutable } from "../install.js";
 import type { PluginDiscovery, ProtectedValue, RegistrySetupSource, RegistrySourcePlugin } from "./types.js";
 
@@ -200,7 +201,7 @@ function dopplerSetupSource(env: NodeJS.ProcessEnv): RegistrySetupSource {
   return {
     id: `${PLUGIN_NAME}/secrets-download`,
     label,
-    defaultEnabled: setupEnabledDefault(env.FICTA_REGISTRY_DOPPLER_ENABLED, Boolean(executable)),
+    defaultEnabled: envEnabled(env.FICTA_REGISTRY_DOPPLER_ENABLED, Boolean(executable)),
     async enabledValues(ctx) {
       const mode = await ctx.promptSelect<DopplerSetupConfigMode>(
         "Default Doppler coverage for each ficta launch",
@@ -424,13 +425,6 @@ function emptyStats(): DopplerStats {
   };
 }
 
-function setupEnabledDefault(value: string | undefined, fallback: boolean): boolean {
-  const normalized = value?.trim().toLowerCase();
-  if (["0", "false", "off", "disabled", "no"].includes(normalized ?? "")) return false;
-  if (["1", "true", "on", "enabled", "yes"].includes(normalized ?? "")) return true;
-  return fallback;
-}
-
 function configModeDefault(value: string | undefined): DopplerSetupConfigMode {
   return value === "all" ? "all" : "current";
 }
@@ -444,9 +438,9 @@ function commandError(
 }
 
 function registryDopplerMode(): DopplerRegistryMode {
-  const raw = (process.env.FICTA_REGISTRY_DOPPLER_ENABLED ?? "1").trim().toLowerCase();
-  if (["0", "false", "off", "disabled", "no"].includes(raw)) return "disabled";
-  if (["1", "true", "on", "enabled", "yes"].includes(raw)) return "enabled";
+  const parsed = parseBoolean(process.env.FICTA_REGISTRY_DOPPLER_ENABLED ?? "1");
+  if (parsed === false) return "disabled";
+  if (parsed === true) return "enabled";
   return "auto";
 }
 
@@ -549,6 +543,13 @@ function unsafeExecutableReason(executable: string): string | undefined {
   const rel = relative(cwd, resolvedExecutable);
   if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
     return `resolved inside the current working tree (${rel})`;
+  }
+
+  try {
+    const stat = statSync(resolvedExecutable);
+    if ((stat.mode & 0o002) !== 0) return `resolved to world-writable executable (${resolvedExecutable})`;
+  } catch {
+    return `could not stat executable (${resolvedExecutable})`;
   }
 
   const executableDir = dirname(resolvedExecutable);

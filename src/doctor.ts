@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync } from "node:fs";
 import { configuredUpstreamPolicyIssues, loadConfig } from "./config.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
+import { envFlag } from "./env-flags.js";
 import { globalDisablePath, isGloballyDisabled } from "./global-disable.js";
 import { defaultShimDir, findExecutable } from "./install.js";
 import { codexUsesChatgptAuth } from "./plugins/agents.js";
@@ -302,11 +303,6 @@ function routeSummary(command: string): string {
   }
   if (command === "pi") return "injects a temporary Pi extension overriding Anthropic/OpenAI base URLs";
   return "agent integration supplies launch environment";
-}
-
-function envFlag(value: string | undefined): boolean {
-  const normalized = value?.toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "on" || normalized === "enabled";
 }
 
 function isUsableExecutable(path: string): boolean {

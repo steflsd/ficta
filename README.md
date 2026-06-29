@@ -7,8 +7,8 @@ already manage in `.env`, process env, or Doppler with deterministic placeholder
 requests leave your machine, then restores the real values locally so your agent can still edit
 files and run commands normally.
 
-If a registered value would be sent verbatim in a covered request surface, ficta blocks the request
-instead of forwarding it.
+If a protected value would be sent verbatim in a surface ficta redacts, ficta blocks the request
+instead of forwarding it. The exact boundary and deliberate exceptions are scoped below.
 
 ## Who it's for
 
@@ -65,9 +65,9 @@ ficta --version  # shows +dev from a source checkout
 
 ficta's exact guarantee is intentionally narrow:
 
-- protects **registered values in their verbatim form**;
+- protects **registered values in their verbatim form** after registry filters and exclusions;
 - redacts covered request bodies, query strings, and non-auth headers;
-- fail-closes if a protected value survives redaction in those covered surfaces;
+- fail-closes if a protected value survives redaction in a surface ficta is supposed to redact;
 - restores placeholders locally on model responses.
 
 By default, ficta discovers values from:
@@ -76,8 +76,12 @@ By default, ficta discovers values from:
 - Doppler's current config, when the Doppler CLI is available;
 - secret-ish process env names such as `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AWS`, `OPENAI`, etc.
 
-Provider auth headers such as `Authorization`, `x-api-key`, and cookies pass through because the
-upstream needs them.
+Registry sources skip values shorter than `registry.min_len` / `FICTA_REGISTRY_MIN_LEN` (8 by
+default) and may apply trusted policy exclusions for known metadata names.
+
+The built-in auth-header allowlist (`Authorization`, `Proxy-Authorization`, `x-api-key`, and
+`Cookie`) passes through because upstream providers need those headers. Other headers are treated as
+non-auth headers and may be redacted if they contain registered values.
 
 ## What ficta does not protect
 
@@ -85,7 +89,8 @@ ficta does not claim full prompt privacy or full DLP coverage.
 
 Out of scope:
 
-- unregistered or transformed values, such as base64/URL-encoded/split secrets;
+- unregistered, filtered-out, or transformed values, such as base64/URL-encoded/split secrets;
+- registered values when they appear in filesystem-path-like tokens, unless `FICTA_REDACT_PATHS=1`;
 - secrets sent by the agent through tool execution, `curl`, MCP tools, or custom scripts;
 - binary responses and arbitrary non-model network egress;
 - using ficta as a sandbox or compliance control.
@@ -99,6 +104,9 @@ See [`docs/threat-model.md`](./docs/threat-model.md) for the full boundary.
 | Claude Code | Verified | Uses Anthropic base URL routing. |
 | Codex | Verified | Supports API-key and ChatGPT/OAuth flows. |
 | Pi | Beta | Routes built-in Anthropic/OpenAI providers via a temporary Pi extension. |
+
+"Verified" means the adapter is covered by automated routing/redaction tests and maintainer local
+runs. Agent CLIs change over time, so run `ficta doctor <agent>` before relying on a setup.
 
 Non-model commands such as `--help` and `--version` pass through to the real agent without starting
 a proxy.

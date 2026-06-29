@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { argv } from "node:process";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
-import { loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
+import { type Context, Hono } from "hono";
+import { type Config, loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
 import { ProtectionEngine } from "./engine.js";
 import { logRequest, logResponse, runDir } from "./log.js";
 import {
@@ -46,20 +46,12 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
 
     let searchToSend = url.search;
     if (protect && searchToSend) {
-      const { text: redactedSearch, count, leaks } = engine.redactText(searchToSend, { path: url.pathname });
-      if (leaks > 0 && cfg.failClosed) {
-        return c.json(
-          {
-            error: {
-              type: "ficta_blocked",
-              message: `ficta refused to forward: ${leaks} registered value(s) would have reached the model query string`,
-            },
-          },
-          403,
-        );
+      const { search: redactedSearch, count, leaks } = redactQueryString(engine, url);
+      if (leaks > 0 && cfg.failClosed) return blockedLeakResponse(c, cfg, "query string", leaks);
+      if (count > 0) {
+        kept += count;
+        searchToSend = redactedSearch;
       }
-      if (count > 0) kept += count;
-      searchToSend = redactedSearch;
     }
 
     const { url: target, note: route } = resolveTarget(cfg, url.pathname, searchToSend, c.req.raw.headers);
@@ -83,22 +75,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
 
       if (protect) {
         const { body: redacted, count, leaks } = engine.redactBody(bodyText, { path: url.pathname });
-        if (leaks > 0 && cfg.failClosed) {
-          if (!cfg.silent) {
-            console.error(
-              `🛑 ficta #${n} BLOCKED — ${leaks} registered value(s) survived body redaction; refusing to forward`,
-            );
-          }
-          return c.json(
-            {
-              error: {
-                type: "ficta_blocked",
-                message: `ficta refused to forward: ${leaks} registered value(s) would have reached the model body`,
-              },
-            },
-            403,
-          );
-        }
+        if (leaks > 0 && cfg.failClosed) return blockedLeakResponse(c, cfg, "body", leaks, n);
         if (count > 0) {
           kept += count;
           if (!cfg.silent) {
@@ -118,22 +95,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
 
     if (protect) {
       const { count, leaks } = redactNonAuthHeaders(engine, headers);
-      if (leaks > 0 && cfg.failClosed) {
-        if (!cfg.silent) {
-          console.error(
-            `🛑 ficta #${n} BLOCKED — ${leaks} registered value(s) survived header redaction; refusing to forward`,
-          );
-        }
-        return c.json(
-          {
-            error: {
-              type: "ficta_blocked",
-              message: `ficta refused to forward: ${leaks} registered value(s) would have reached model headers`,
-            },
-          },
-          403,
-        );
-      }
+      if (leaks > 0 && cfg.failClosed) return blockedLeakResponse(c, cfg, "headers", leaks, n);
       if (count > 0) {
         kept += count;
         if (!cfg.silent) {
@@ -154,28 +116,48 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     const resHeaders = new Headers(upstreamRes.headers);
     resHeaders.delete("content-encoding");
     resHeaders.delete("content-length");
+    // We always re-frame the body (stream restore or buffered JSON restore), so the upstream's
+    // framing header must not survive: a buffered restore sets Content-Length, which is illegal
+    // alongside a forwarded Transfer-Encoding: chunked.
+    resHeaders.delete("transfer-encoding");
     const contentType = resHeaders.get("content-type") ?? "";
     const restoreResponse = protect && isRestorableContentType(contentType);
 
     if (upstreamRes.body) {
       const [toClient, toLog] = upstreamRes.body.tee();
       void logResponse({ n, path: url.pathname, status: upstreamRes.status, contentType, stream: toLog });
-      const out = restoreResponse
-        ? toClient.pipeThrough(
-            isEventStreamContentType(contentType)
-              ? engine.restoreEventStream(wireOf(url.pathname))
-              : engine.restoreStream(),
-          )
-        : toClient;
-      return new Response(out, { status: upstreamRes.status, headers: resHeaders });
+      if (!restoreResponse) {
+        return new Response(toClient, { status: upstreamRes.status, headers: resHeaders });
+      }
+      if (isEventStreamContentType(contentType)) {
+        // The per-wire adapter reassembles surrogates split across SSE events; an unrecognized wire
+        // uses the NOOP adapter, which still restores whole surrogates in each event JSON-safely
+        // (see Vault.restoreSseRecord). Cross-event reassembly needs a known wire schema, so it is
+        // intentionally not attempted here.
+        return new Response(toClient.pipeThrough(engine.restoreEventStream(wireOf(url.pathname))), {
+          status: upstreamRes.status,
+          headers: resHeaders,
+        });
+      }
+      if (isJsonContentType(contentType)) {
+        // Buffer + JSON-aware restore so a restored value with JSON-special chars stays escaped.
+        // Non-streaming JSON bodies are bounded, so giving up streaming here costs nothing.
+        const text = await new Response(toClient).text();
+        return new Response(restoreBufferedBody(engine, contentType, text), {
+          status: upstreamRes.status,
+          headers: resHeaders,
+        });
+      }
+      return new Response(toClient.pipeThrough(engine.restoreStream()), {
+        status: upstreamRes.status,
+        headers: resHeaders,
+      });
     }
 
     const body = await upstreamRes.text();
     void logResponse({ n, path: url.pathname, status: upstreamRes.status, contentType, body });
-    return new Response(restoreResponse ? engine.restoreText(body) : body, {
-      status: upstreamRes.status,
-      headers: resHeaders,
-    });
+    const restoredBody = restoreResponse ? restoreBufferedBody(engine, contentType, body) : body;
+    return new Response(restoredBody, { status: upstreamRes.status, headers: resHeaders });
   });
 
   return new Promise<ProxyHandle>((resolve) => {
@@ -234,6 +216,82 @@ function isRestorableContentType(contentType: string): boolean {
 
 function isEventStreamContentType(contentType: string): boolean {
   return contentTypeBase(contentType) === "text/event-stream";
+}
+
+function isJsonContentType(contentType: string): boolean {
+  const base = contentTypeBase(contentType);
+  // Stream-framed JSON (newline-delimited / json-seq) is not a single JSON document — buffering it
+  // would defeat streaming and JSON.parse would fail, so it must fall through to the stream restore.
+  if (base.includes("ndjson") || base.includes("json-seq") || base.includes("jsonl")) return false;
+  return base === "application/json" || base.endsWith("+json");
+}
+
+/** Restore a fully-buffered body by content type: JSON-aware where possible, raw text otherwise. */
+function restoreBufferedBody(engine: ProtectionEngine, contentType: string, body: string): string {
+  return isJsonContentType(contentType) ? engine.restoreJson(body) : engine.restoreText(body);
+}
+
+/**
+ * Redact registered values from a query string. URL.search is percent-encoded, so a stored
+ * plaintext value (e.g. one containing a space or `/`) only matches once each parameter is decoded;
+ * we decode per parameter to redact, but re-encode only the parameters we actually changed and keep
+ * every other parameter's wire bytes verbatim — re-encoding the whole query would normalize the
+ * encoding of untouched, possibly signature-sensitive parameters.
+ */
+function redactQueryString(engine: ProtectionEngine, url: URL): { search: string; count: number; leaks: number } {
+  const raw = url.search.startsWith("?") ? url.search.slice(1) : url.search;
+  if (!raw) return { search: url.search, count: 0, leaks: 0 };
+
+  let count = 0;
+  let leaks = 0;
+  const segments = raw.split("&").map((segment) => {
+    const eq = segment.indexOf("=");
+    const rawKey = eq === -1 ? segment : segment.slice(0, eq);
+    const rawValue = eq === -1 ? undefined : segment.slice(eq + 1);
+
+    const redactedKey = engine.redactText(decodeQueryComponent(rawKey), { path: url.pathname });
+    count += redactedKey.count;
+    leaks += redactedKey.leaks;
+    const outKey = redactedKey.count > 0 ? encodeURIComponent(redactedKey.text) : rawKey;
+
+    if (rawValue === undefined) return outKey;
+
+    const redactedValue = engine.redactText(decodeQueryComponent(rawValue), { path: url.pathname });
+    count += redactedValue.count;
+    leaks += redactedValue.leaks;
+    const outValue = redactedValue.count > 0 ? encodeURIComponent(redactedValue.text) : rawValue;
+
+    return `${outKey}=${outValue}`;
+  });
+
+  return { search: `?${segments.join("&")}`, count, leaks };
+}
+
+function decodeQueryComponent(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    return value;
+  }
+}
+
+/** Single fail-closed 403 builder so the query/body/header surfaces stay in lockstep. */
+function blockedLeakResponse(c: Context, cfg: Config, surface: string, leaks: number, n?: number): Response {
+  if (!cfg.silent) {
+    const id = n === undefined ? "" : ` #${n}`;
+    console.error(
+      `🛑 ficta${id} BLOCKED — ${leaks} registered value(s) survived ${surface} redaction; refusing to forward`,
+    );
+  }
+  return c.json(
+    {
+      error: {
+        type: "ficta_blocked",
+        message: `ficta refused to forward: ${leaks} registered value(s) would have reached the model ${surface}`,
+      },
+    },
+    403,
+  );
 }
 
 function contentTypeBase(contentType: string): string {

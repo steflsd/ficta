@@ -1,4 +1,5 @@
 import { plural } from "../text.js";
+import { isRecord } from "../vault.js";
 import { builtInAgentPlugin } from "./agents.js";
 import { dopplerPlugin, resetDopplerPluginCacheForTests } from "./doppler.js";
 import { knownEnvPlugin, resetKnownEnvPluginCacheForTests } from "./known-env.js";
@@ -139,10 +140,6 @@ export function validatePluginBoundaries(plugins: readonly FictaPlugin[]): void 
 function registryPlugins(plugins: readonly FictaPlugin[]): RegistrySourcePlugin[] {
   validatePluginBoundaries(plugins);
   return plugins.filter((plugin): plugin is RegistrySourcePlugin => plugin.kind === "registry-source");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export interface PluginRegistrySnapshot {

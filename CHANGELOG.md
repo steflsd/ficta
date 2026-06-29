@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Changed
+
+- Clarified README and threat-model wording for registry filters, path-like-token preservation, auth-header pass-through scope, and supported-agent verification status.
+- Consolidated boolean env-flag parsing into a single `src/env-flags.ts` (`parseBoolean`/`envFlag`/`envEnabled`) and deduplicated `isRecord`, removing ~7 drifted copies across config, CLI, doctor, vault, user-config, and plugins.
+- Routed all fail-closed 403s through a single shared builder so the query/body/header surfaces stay in lockstep, added blocked-leak logging to the query surface, and reduced redundant registry rebuilds during body inspection.
+- Routed both the buffered (streaming-JSON and non-streaming) response paths through a single restore-by-content-type helper so the JSON-vs-text restore decision lives in one place.
+
+### Fixed
+
+- Fixed fail-closed leak detection for registered numeric-looking values sent as JSON number primitives; the backstop now matches a value only as a complete primitive token, so a registered number is never falsely flagged when it merely appears as a substring of a larger unrelated number (e.g. `12345678` inside `99912345678`).
+- Hardened Doppler registry loading by refusing a Doppler executable file that is itself world-writable.
+- Redacted registered secret values that appear percent-encoded in request query strings; the query surface now decodes each parameter to redact and the fail-closed leak check sees the real plaintext, while re-encoding only the parameters it actually changed so untouched, encoding-sensitive parameters keep their wire bytes verbatim.
+- Treated only genuine `127.0.0.0/8` dotted-quad literals as loopback when applying the custom-upstream gate; lookalike DNS names such as `127.foo.com` and `127.0.0.1.attacker.example` are no longer mistaken for loopback.
+- Honored all truthy spellings (`yes`, `on`, `enabled`, …) for boolean env flags consistently; previously `FICTA_REDACT_PATHS=yes` was silently ignored because the vault's parser accepted only `1`/`true`.
+- Kept JSON response bodies valid when a restored value contains JSON-special characters (quotes, backslashes, newlines): surrogates are now restored in place with each value escaped for its JSON string context, instead of a `JSON.parse`/`JSON.stringify` round-trip that silently rounded integers beyond 2^53 and reformatted numbers in otherwise-unchanged responses.
+- Streamed newline-delimited JSON (`application/x-ndjson`, `application/json-seq`) responses now pass through the streaming restore instead of being buffered in full and run through the single-document JSON restore; only true JSON bodies are buffered.
+- Stopped registering shell `PWD`/`OLDPWD` as protected secrets (which redacted the working directory) while keeping every other `PWD`-bearing credential name covered (`DB_PWD`, `ADMINPWD`, `PWDHASH`, …), not only the `_PWD` underscore form.
+- Fully restored surrogates in SSE sibling fields and non-fragment event records (JSON-safe) without re-serializing the event, so large integers and number formatting in non-fragment events are preserved.
+
 ## 0.1.0-beta.4 - 2026-06-26
 
 - Added a public `./plugins` entry point (`@steflsd/ficta/plugins`) exposing the plugin contract types and built-in plugin API, with TypeScript declaration output (`declaration: true`) so the types ship in the package.
