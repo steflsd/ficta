@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- Added local metadata-only protection stats for each proxy run, including a shutdown summary and `stats.json` with counts by model, surface, wire, and protected label.
+- Added an opt-in live end-to-end protection check (`pnpm test:e2e`, or `pnpm verify:live`) that launches each real agent (Claude Code, Codex, Pi) through ficta against the real provider, makes it read a sample `.env`, and asserts the canary value is redacted on the wire (placeholder present, literal absent) with the local restore round-trip checked. It is excluded from the default offline suite/CI and self-skips per agent when the real binary or provider auth is absent.
+
+### Changed
+
+- Documented that IDE clients such as Cursor are out of scope: only CLI agents that route all model traffic through the proxy are supported, since Cursor's Agent/Edit/Tab features bypass a custom base URL and could reach the provider unredacted. Recorded the boundary in `docs/threat-model.md` and the README supported-agents section.
+
+### Fixed
+
+- Fixed the Pi adapter, which did not actually route model traffic through ficta. Pi ignores an extension's `registerProvider({ baseUrl })` override (it patches model copies after load and the override never reaches the request layer), so the previous temp-extension approach left Pi talking directly to the real backends — including the user's default `openai-codex` provider. ficta now launches Pi with `PI_CODING_AGENT_DIR` set to an ephemeral agent dir that mirrors the user's real auth/settings and swaps in a generated `models.json` overriding the base URLs of the built-in `anthropic`/`openai`/`openai-codex` providers, the only override Pi reliably honors. Redaction on the wire is verified live for `openai-codex`; user-defined providers point at their own upstreams and remain unrouted. Pi stays **Beta** because of the known issue below.
+
+### Known issues
+
+- Pi response-restore does not yet apply to the `openai-codex` (ChatGPT-backend) response path: the model's echoed `FICTA_…` placeholder is not restored to the real value in Pi's output, so a placeholder can surface in Pi's responses or written files. The secret is still kept out of the model (redaction works) — this is a round-trip bug, not a leak.
+
 ## 0.1.0-beta.5 - 2026-06-30
 
 ### Changed

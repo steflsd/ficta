@@ -301,7 +301,7 @@ function routeSummary(command: string): string {
       ? "injects Codex custom provider + chatgpt_base_url (ChatGPT/OAuth detected)"
       : "injects Codex custom provider for OpenAI-compatible traffic";
   }
-  if (command === "pi") return "injects a temporary Pi extension overriding Anthropic/OpenAI base URLs";
+  if (command === "pi") return "routes Pi via an ephemeral PI_CODING_AGENT_DIR with a models.json base-URL override";
   return "agent integration supplies launch environment";
 }
 

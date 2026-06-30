@@ -97,6 +97,33 @@ describe("proxy hardening", () => {
       expect(meta).not.toContain(AWS);
       expect(meta).toContain('"keyCount"');
       expect(meta).toContain('"modelSet"');
+
+      const statsText = readFileSync(join(logDir, run ?? "", "stats.json"), "utf8");
+      const stats = JSON.parse(statsText) as {
+        totals: {
+          affectedRequests: number;
+          redactedValues: number;
+          keptOutOfModelValues: number;
+          blockedRequests: number;
+        };
+        byModel: Array<{ name: string; keptOutOfModelValues: number }>;
+        bySurface: Array<{ name: string; redactedValues: number }>;
+        byLabel: Array<{ name: string; source: string; redactedValues: number }>;
+      };
+      expect(statsText).not.toContain(AWS);
+      expect(stats.totals).toMatchObject({
+        affectedRequests: 2,
+        redactedValues: 2,
+        keptOutOfModelValues: 2,
+        blockedRequests: 0,
+      });
+      expect(stats.byModel).toContainEqual(expect.objectContaining({ name: "<redacted>", keptOutOfModelValues: 1 }));
+      expect(stats.bySurface).toContainEqual(expect.objectContaining({ name: "body", redactedValues: 2 }));
+      expect(stats.byLabel).toContainEqual(
+        expect.objectContaining({ name: "AWS_KEY", source: "env-file", redactedValues: 2 }),
+      );
+      expect(proxy.protectionStats().totals.keptOutOfModelValues).toBe(2);
+      expect(proxy.statsSummary()).toContain("stats.json");
     } finally {
       proxy?.close();
       await close(upstream);

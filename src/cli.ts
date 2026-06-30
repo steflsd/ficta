@@ -243,7 +243,7 @@ const child = spawn(plan.executable, plan.args, { stdio: "inherit", env: plan.en
 
 let cleaned = false;
 const shutdown = async () => {
-  process.stderr.write(`\n🔒 ficta — kept ${proxy.keptCount()} protected value(s) out of the model this session\n`);
+  process.stderr.write(`\n${proxy.statsSummary()}`);
   proxy.close();
   if (!cleaned) {
     cleaned = true;

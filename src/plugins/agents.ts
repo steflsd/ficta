@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentIntegration, AgentIntegrationPlugin } from "./types.js";
@@ -48,20 +48,29 @@ export const codexAgent: AgentIntegration = {
   },
 };
 
+const PI_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+
 export const piAgent: AgentIntegration = {
   id: "builtin/pi",
   command: "pi",
   label: "Pi coding agent",
-  description: "Injects a temporary Pi extension that overrides supported provider base URLs",
+  description:
+    "Routes Pi's built-in providers through ficta via an ephemeral PI_CODING_AGENT_DIR with a models.json base-URL override",
   shouldBypass: (args) => commonNonModelCommand(args) || PI_NON_MODEL_COMMANDS.has(args[0] ?? ""),
   configureLaunch: ({ baseUrl, args, realExecutable, env }) => {
+    // Pi ignores an extension's registerProvider({ baseUrl }) override for routing
+    // (it patches model copies post-load and the override never reaches the request
+    // layer). The reliable override is a models.json provider baseUrl, applied at
+    // startup before model selection. So we point Pi at a throwaway agent dir that
+    // mirrors the user's real auth/settings but swaps in a ficta-routed models.json.
+    const sourceDir = piSourceAgentDir(env);
     const dir = mkdtempSync(join(tmpdir(), "ficta-pi-"));
-    const extensionPath = join(dir, "ficta-provider.ts");
-    writeFileSync(extensionPath, piProviderExtension(), { mode: 0o600 });
+    const sourceModels = mirrorPiAgentDir(sourceDir, dir);
+    writeFileSync(join(dir, "models.json"), piModelsConfig(baseUrl, sourceModels), { mode: 0o600 });
     return {
       executable: realExecutable,
-      args: ["-e", extensionPath, ...args],
-      env: { ...env, FICTA_BASE_URL: baseUrl },
+      args,
+      env: { ...env, [PI_AGENT_DIR_ENV]: dir },
       cleanup: () => rmSync(dir, { recursive: true, force: true }),
     };
   },
@@ -137,17 +146,66 @@ function readCodexConfig(env: NodeJS.ProcessEnv): string | undefined {
   }
 }
 
-export function piProviderExtension(): string {
-  return `import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
-export default function (pi: ExtensionAPI) {
-  const base = process.env.FICTA_BASE_URL?.replace(/\\/+$/, "");
-  if (!base) return;
-  const v1 = base + "/v1";
-
-  // Override built-in provider endpoints while preserving their models/auth.
-  pi.registerProvider("anthropic", { baseUrl: v1 });
-  pi.registerProvider("openai", { baseUrl: v1 });
+/** Resolve the user's real Pi agent dir (honoring an existing PI_CODING_AGENT_DIR). */
+function piSourceAgentDir(env: NodeJS.ProcessEnv): string {
+  const override = env[PI_AGENT_DIR_ENV];
+  if (override) return override.startsWith("~") ? join(homedir(), override.slice(1)) : override;
+  return join(homedir(), ".pi", "agent");
 }
-`;
+
+/**
+ * Symlink every entry of the user's agent dir into `dest` except `models.json`
+ * (which ficta regenerates), so Pi keeps its real auth/settings/trust/sessions.
+ * Returns the source models.json contents if present, for merging.
+ */
+function mirrorPiAgentDir(sourceDir: string, dest: string): string | undefined {
+  if (!existsSync(sourceDir)) return undefined;
+  let sourceModels: string | undefined;
+  for (const name of readdirSync(sourceDir)) {
+    if (name === "models.json") {
+      try {
+        sourceModels = readFileSync(join(sourceDir, name), "utf8");
+      } catch {
+        // Unreadable; fall back to overrides-only.
+      }
+      continue;
+    }
+    try {
+      symlinkSync(join(sourceDir, name), join(dest, name));
+    } catch {
+      // Best effort: skip entries we cannot link (e.g. already present).
+    }
+  }
+  return sourceModels;
+}
+
+/**
+ * Build a Pi `models.json` that overrides the base URLs of the built-in providers
+ * ficta can route (`anthropic`, `openai`, `openai-codex`) to the local proxy, while
+ * preserving any user-defined providers untouched. Custom providers point at their
+ * own upstreams, which ficta cannot forward, so they are intentionally left as-is.
+ */
+export function piModelsConfig(baseUrl: string, sourceModels?: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  let top: Record<string, unknown> = {};
+  let providers: Record<string, Record<string, unknown>> = {};
+  if (sourceModels) {
+    try {
+      const parsed = JSON.parse(sourceModels) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") {
+        top = parsed;
+        const p = parsed.providers;
+        if (p && typeof p === "object") providers = { ...(p as Record<string, Record<string, unknown>>) };
+      }
+    } catch {
+      // Malformed user models.json — start from overrides only.
+    }
+  }
+  const override = (name: string, providerBase: string) => {
+    providers[name] = { ...(providers[name] ?? {}), baseUrl: providerBase };
+  };
+  override("anthropic", base); // Pi appends /v1/messages
+  override("openai", `${base}/v1`); // Pi appends /chat/completions or /responses
+  override("openai-codex", `${base}/backend-api`); // ChatGPT/Codex backend
+  return JSON.stringify({ ...top, providers }, null, 2);
 }

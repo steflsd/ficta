@@ -77,10 +77,10 @@ Agent shims are backed by built-in agent-integration plugins:
 
 - `claude`: sets `ANTHROPIC_BASE_URL` for Claude Code.
 - `codex`: injects temporary `-c model_provider=...` overrides, including ChatGPT/OAuth handling.
-- `pi`: injects a temporary Pi extension (`-e <tmp>/ficta-provider.ts`) that calls
-  `pi.registerProvider()` for the built-in `anthropic` and `openai` providers, preserving Pi's
-  normal auth/model selection for those providers. Other Pi providers need their own adapter/wire
-  support before they are covered.
+- `pi`: launches Pi with `PI_CODING_AGENT_DIR` set to an ephemeral agent dir that mirrors Pi's real
+  auth/settings and swaps in a `models.json` overriding the base URLs of the built-in `anthropic`,
+  `openai`, and `openai-codex` providers to the ficta proxy. (A `models.json` base URL is the only
+  override Pi reliably honors.) User-defined providers point at their own upstreams and are not routed.
 
 Non-model commands such as `--version`, `--help`, and Pi package-management commands (`pi install`,
 `pi update`, etc.) pass through directly to the real agent without starting a proxy.

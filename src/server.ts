@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { type Context, Hono } from "hono";
 import { type Config, loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
-import { ProtectionEngine } from "./engine.js";
+import { ProtectionEngine, type ProtectionHit } from "./engine.js";
 import { logRequest, logResponse, runDir } from "./log.js";
 import {
   type FictaPlugin,
@@ -14,8 +14,9 @@ import {
   registryDiscoveryLines,
   registryPolicyLines,
 } from "./plugins/index.js";
+import { ProtectionStats, type ProtectionStatsSnapshot, type ProtectionSurface } from "./protection-stats.js";
 import { surrogateKeyWarning } from "./vault.js";
-import { wireOf } from "./wire.js";
+import { type Wire, wireOf } from "./wire.js";
 
 export interface ProxyHandle {
   port: number;
@@ -25,6 +26,8 @@ export interface ProxyHandle {
   policyExcludedBySource: Record<string, number>;
   registryPolicy: RegistryPolicy;
   keptCount: () => number;
+  protectionStats: () => ProtectionStatsSnapshot;
+  statsSummary: () => string;
   close: () => void;
 }
 
@@ -32,8 +35,8 @@ export interface ProxyHandle {
 export async function startProxy(opts: { port?: number; plugins?: readonly FictaPlugin[] } = {}): Promise<ProxyHandle> {
   const cfg = loadConfig();
   const engine = new ProtectionEngine({ plugins: opts.plugins });
+  const stats = new ProtectionStats(runDir);
   const app = new Hono();
-  let kept = 0;
 
   app.all("*", async (c) => {
     const url = new URL(c.req.url);
@@ -43,20 +46,42 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     // Provider/client paths change, and an "unknown" route can still carry conversation/tool
     // content; exact-match redaction is safe.
     const protect = engine.enabled;
+    const method = c.req.method;
+    const wire = wireOf(url.pathname);
 
     let searchToSend = url.search;
+    let queryRedaction: SurfaceRedaction | undefined;
     if (protect && searchToSend) {
-      const { search: redactedSearch, count, leaks } = redactQueryString(engine, url);
-      if (leaks > 0 && cfg.failClosed) return blockedLeakResponse(c, cfg, "query string", leaks);
-      if (count > 0) {
-        kept += count;
-        searchToSend = redactedSearch;
+      const { search: redactedSearch, ...redaction } = redactQueryString(engine, url);
+      queryRedaction = redaction;
+      if (redaction.leaks > 0 && cfg.failClosed) {
+        recordProtection(stats, engine, {
+          method,
+          path: url.pathname,
+          wire,
+          surface: "query string",
+          redaction,
+          blocked: true,
+        });
+        return blockedLeakResponse(c, cfg, "query string", redaction.leaks);
       }
+      if (redaction.count > 0) searchToSend = redactedSearch;
     }
 
     const { url: target, note: route } = resolveTarget(cfg, url.pathname, searchToSend, c.req.raw.headers);
     const upstreamIssue = upstreamPolicyIssue(cfg, target);
     if (upstreamIssue) {
+      if (queryRedaction) {
+        recordProtection(stats, engine, {
+          method,
+          path: url.pathname,
+          wire,
+          route,
+          surface: "query string",
+          redaction: queryRedaction,
+          blocked: false,
+        });
+      }
       return c.json({ error: { type: "ficta_upstream_policy", message: upstreamIssue } }, 403);
     }
 
@@ -65,22 +90,61 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     headers.delete("content-length");
     headers.delete("accept-encoding");
 
-    const method = c.req.method;
     let bodyToSend: string | undefined;
     let n: number;
+    let requestModel = "unknown";
 
     if (method !== "GET" && method !== "HEAD") {
       const bodyText = await c.req.raw.text();
+      const originalModel = requestModelFromBody(bodyText);
       n = logRequest({ method, path: url.pathname, body: bodyText, target, route });
 
       if (protect) {
-        const { body: redacted, count, leaks } = engine.redactBody(bodyText, { path: url.pathname });
-        if (leaks > 0 && cfg.failClosed) return blockedLeakResponse(c, cfg, "body", leaks, n);
-        if (count > 0) {
-          kept += count;
-          if (!cfg.silent) {
-            const warn = leaks > 0 ? `  ⚠ ${leaks} LEAKED (fail-open)` : "";
-            console.log(`🔒 ficta #${n} — kept ${count} body value(s) out of the model${warn}`);
+        const redaction = engine.redactBodyDetailed(bodyText, { path: url.pathname });
+        const redacted = redaction.body;
+        requestModel = safeRequestModel(engine, originalModel, requestModelFromBody(redacted));
+        if (queryRedaction) {
+          recordProtection(stats, engine, {
+            requestId: n,
+            method,
+            path: url.pathname,
+            wire,
+            route,
+            model: requestModel,
+            surface: "query string",
+            redaction: queryRedaction,
+            blocked: false,
+          });
+        }
+        if (redaction.leaks > 0 && cfg.failClosed) {
+          recordProtection(stats, engine, {
+            requestId: n,
+            method,
+            path: url.pathname,
+            wire,
+            route,
+            model: requestModel,
+            surface: "body",
+            redaction,
+            blocked: true,
+          });
+          return blockedLeakResponse(c, cfg, "body", redaction.leaks, n);
+        }
+        if (redaction.count > 0 || redaction.leaks > 0) {
+          recordProtection(stats, engine, {
+            requestId: n,
+            method,
+            path: url.pathname,
+            wire,
+            route,
+            model: requestModel,
+            surface: "body",
+            redaction,
+            blocked: false,
+          });
+          if (redaction.count > 0 && !cfg.silent) {
+            const warn = redaction.leaks > 0 ? `  ⚠ ${redaction.leaks} LEAKED (fail-open)` : "";
+            console.log(`🔒 ficta #${n} — kept ${redaction.count} body value(s) out of the model${warn}`);
           }
         }
         bodyToSend = redacted;
@@ -91,16 +155,51 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
       }
     } else {
       n = logRequest({ method, path: url.pathname, body: "", target, route });
+      if (queryRedaction) {
+        recordProtection(stats, engine, {
+          requestId: n,
+          method,
+          path: url.pathname,
+          wire,
+          route,
+          surface: "query string",
+          redaction: queryRedaction,
+          blocked: false,
+        });
+      }
     }
 
     if (protect) {
-      const { count, leaks } = redactNonAuthHeaders(engine, headers);
-      if (leaks > 0 && cfg.failClosed) return blockedLeakResponse(c, cfg, "headers", leaks, n);
-      if (count > 0) {
-        kept += count;
-        if (!cfg.silent) {
-          const warn = leaks > 0 ? `  ⚠ ${leaks} LEAKED (fail-open)` : "";
-          console.log(`🔒 ficta #${n} — kept ${count} non-auth header value(s) out of the model${warn}`);
+      const redaction = redactNonAuthHeaders(engine, headers);
+      if (redaction.leaks > 0 && cfg.failClosed) {
+        recordProtection(stats, engine, {
+          requestId: n,
+          method,
+          path: url.pathname,
+          wire,
+          route,
+          model: requestModel,
+          surface: "non-auth headers",
+          redaction,
+          blocked: true,
+        });
+        return blockedLeakResponse(c, cfg, "headers", redaction.leaks, n);
+      }
+      if (redaction.count > 0 || redaction.leaks > 0) {
+        recordProtection(stats, engine, {
+          requestId: n,
+          method,
+          path: url.pathname,
+          wire,
+          route,
+          model: requestModel,
+          surface: "non-auth headers",
+          redaction,
+          blocked: false,
+        });
+        if (redaction.count > 0 && !cfg.silent) {
+          const warn = redaction.leaks > 0 ? `  ⚠ ${redaction.leaks} LEAKED (fail-open)` : "";
+          console.log(`🔒 ficta #${n} — kept ${redaction.count} non-auth header value(s) out of the model${warn}`);
         }
       }
     }
@@ -199,7 +298,9 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
         policyExcluded: engine.registry.policyExcluded,
         policyExcludedBySource: engine.registry.policyExcludedBySource,
         registryPolicy: engine.registry.registryPolicy,
-        keptCount: () => kept,
+        keptCount: () => stats.snapshot().totals.keptOutOfModelValues,
+        protectionStats: () => stats.snapshot(),
+        statsSummary: () => stats.renderSummary(),
         close: () => server.close(),
       });
     });
@@ -208,6 +309,18 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
 
 const HEALTH_PATH = "/__ficta/health";
 const REQUIRED_AUTH_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "cookie"]);
+const SURROGATE_RE = /FICTA_[0-9a-f]{32}/;
+
+interface SurfaceRedaction {
+  count: number;
+  leaks: number;
+  hits: ProtectionHit[];
+  leakHits: ProtectionHit[];
+}
+
+interface QueryRedaction extends SurfaceRedaction {
+  search: string;
+}
 
 function isRestorableContentType(contentType: string): boolean {
   const type = contentTypeBase(contentType);
@@ -238,33 +351,30 @@ function restoreBufferedBody(engine: ProtectionEngine, contentType: string, body
  * every other parameter's wire bytes verbatim — re-encoding the whole query would normalize the
  * encoding of untouched, possibly signature-sensitive parameters.
  */
-function redactQueryString(engine: ProtectionEngine, url: URL): { search: string; count: number; leaks: number } {
+function redactQueryString(engine: ProtectionEngine, url: URL): QueryRedaction {
   const raw = url.search.startsWith("?") ? url.search.slice(1) : url.search;
-  if (!raw) return { search: url.search, count: 0, leaks: 0 };
+  if (!raw) return { search: url.search, count: 0, leaks: 0, hits: [], leakHits: [] };
 
-  let count = 0;
-  let leaks = 0;
+  const total = emptyRedaction();
   const segments = raw.split("&").map((segment) => {
     const eq = segment.indexOf("=");
     const rawKey = eq === -1 ? segment : segment.slice(0, eq);
     const rawValue = eq === -1 ? undefined : segment.slice(eq + 1);
 
-    const redactedKey = engine.redactText(decodeQueryComponent(rawKey), { path: url.pathname });
-    count += redactedKey.count;
-    leaks += redactedKey.leaks;
+    const redactedKey = engine.redactTextDetailed(decodeQueryComponent(rawKey), { path: url.pathname });
+    addRedaction(total, redactedKey);
     const outKey = redactedKey.count > 0 ? encodeURIComponent(redactedKey.text) : rawKey;
 
     if (rawValue === undefined) return outKey;
 
-    const redactedValue = engine.redactText(decodeQueryComponent(rawValue), { path: url.pathname });
-    count += redactedValue.count;
-    leaks += redactedValue.leaks;
+    const redactedValue = engine.redactTextDetailed(decodeQueryComponent(rawValue), { path: url.pathname });
+    addRedaction(total, redactedValue);
     const outValue = redactedValue.count > 0 ? encodeURIComponent(redactedValue.text) : rawValue;
 
     return `${outKey}=${outValue}`;
   });
 
-  return { search: `?${segments.join("&")}`, count, leaks };
+  return { search: `?${segments.join("&")}`, ...total };
 }
 
 function decodeQueryComponent(value: string): string {
@@ -298,19 +408,91 @@ function contentTypeBase(contentType: string): string {
   return contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
 }
 
-function redactNonAuthHeaders(engine: ProtectionEngine, headers: Headers): { count: number; leaks: number } {
-  let count = 0;
-  let leaks = 0;
+function redactNonAuthHeaders(engine: ProtectionEngine, headers: Headers): SurfaceRedaction {
+  const total = emptyRedaction();
   for (const [name, value] of [...headers]) {
     if (REQUIRED_AUTH_HEADER_NAMES.has(name.toLowerCase())) continue;
-    const redacted = engine.redactText(value, { header: name });
-    if (redacted.count > 0) {
-      headers.set(name, redacted.text);
-      count += redacted.count;
-    }
-    leaks += redacted.leaks;
+    const redacted = engine.redactTextDetailed(value, { header: name, surface: "header" });
+    if (redacted.count > 0) headers.set(name, redacted.text);
+    addRedaction(total, redacted);
   }
-  return { count, leaks };
+  return total;
+}
+
+function emptyRedaction(): SurfaceRedaction {
+  return { count: 0, leaks: 0, hits: [], leakHits: [] };
+}
+
+function addRedaction(
+  total: SurfaceRedaction,
+  redaction: { count: number; leaks: number; hits: ProtectionHit[]; leakHits: ProtectionHit[] },
+): void {
+  total.count += redaction.count;
+  total.leaks += redaction.leaks;
+  total.hits.push(...redaction.hits);
+  total.leakHits.push(...redaction.leakHits);
+}
+
+function recordProtection(
+  stats: ProtectionStats,
+  engine: ProtectionEngine,
+  args: {
+    requestId?: number;
+    method: string;
+    path: string;
+    wire: Wire;
+    route?: string;
+    model?: string;
+    surface: ProtectionSurface;
+    redaction: SurfaceRedaction;
+    blocked: boolean;
+  },
+): void {
+  stats.record({
+    requestId: args.requestId,
+    method: args.method,
+    path: safeStatsMetadata(engine, args.path, "<redacted-path>"),
+    wire: args.wire,
+    route: args.route,
+    model: args.model,
+    surface: args.surface,
+    redactedValues: args.redaction.count,
+    survivingValues: args.redaction.leaks,
+    blocked: args.blocked,
+    redactedHits: args.redaction.hits,
+    survivingHits: args.redaction.leakHits,
+  });
+}
+
+function requestModelFromBody(body: string): string | undefined {
+  if (!body) return undefined;
+  try {
+    const value = JSON.parse(body)?.model;
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+  } catch {
+    // Non-JSON or malformed request body: no safe model metadata to extract.
+  }
+  return undefined;
+}
+
+function safeRequestModel(
+  engine: ProtectionEngine,
+  original: string | undefined,
+  redacted: string | undefined,
+): string {
+  const candidate = redacted ?? original;
+  if (!candidate) return "unknown";
+  if (original && engine.containsProtectedValue(original)) return "<redacted>";
+  if (redacted && SURROGATE_RE.test(redacted)) return "<redacted>";
+  if (original && redacted && original !== redacted) return "<redacted>";
+  return candidate;
+}
+
+function safeStatsMetadata(engine: ProtectionEngine, value: string | undefined, fallback: string): string {
+  const text = value?.trim();
+  if (!text) return fallback;
+  return engine.containsProtectedValue(text) || SURROGATE_RE.test(text) ? fallback : text;
 }
 
 // Run directly (`tsx src/server.ts`, `pnpm dev`) → start with the banner.

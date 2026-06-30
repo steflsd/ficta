@@ -290,11 +290,13 @@ The `builtin-agent-integrations` plugin currently provides:
 - `claude` — launches the real Claude Code executable with `ANTHROPIC_BASE_URL=<ficta>`.
 - `codex` — launches the real Codex executable with temporary `-c` provider overrides; detects
   ChatGPT/OAuth auth and adds `requires_openai_auth` + `chatgpt_base_url` when needed.
-- `pi` — writes a temporary Pi extension and launches `pi -e <extension> ...`. The extension calls
-  `pi.registerProvider("anthropic", { baseUrl: <ficta>/v1 })` and
-  `pi.registerProvider("openai", { baseUrl: <ficta>/v1 })` so Pi's Anthropic/OpenAI built-in
-  models/auth are preserved while model traffic passes through ficta. Other Pi providers need their
-  own adapter/wire support before they are covered.
+- `pi` — launches Pi with `PI_CODING_AGENT_DIR` pointed at an ephemeral agent dir that symlinks the
+  user's real `auth.json`/`settings.json`/`trust.json`/sessions and swaps in a generated `models.json`
+  whose `providers` override the base URLs of the built-in `anthropic` (`<ficta>`), `openai`
+  (`<ficta>/v1`), and `openai-codex` (`<ficta>/backend-api`) providers. A `models.json` provider base
+  URL is the only override Pi reliably honors — its extension `registerProvider({ baseUrl })` patches
+  model copies after load and never reaches the request layer. User-defined providers are preserved
+  untouched; since they point at their own upstreams, ficta cannot route them.
 
 Shim installation is derived from the registered agent integrations, not a hardcoded command list.
 

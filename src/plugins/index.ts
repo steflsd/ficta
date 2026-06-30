@@ -23,7 +23,7 @@ export {
   codexAgent,
   codexPersistedFictaCleanupOverrides,
   piAgent,
-  piProviderExtension,
+  piModelsConfig,
 } from "./agents.js";
 export { dopplerPlugin } from "./doppler.js";
 export { buildRegistryPolicy, protectedValueExcludedBy } from "./policy.js";

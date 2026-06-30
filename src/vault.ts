@@ -74,9 +74,15 @@ export class Vault {
 
   /** Redact known values in a raw string. */
   redactText(text: string): { text: string; count: number } {
-    if (this.size === 0 || !text) return { text, count: 0 };
+    const result = this.redactTextDetailed(text);
+    return { text: result.text, count: result.count };
+  }
+
+  /** Redact known values in a raw string and report which raw values matched. */
+  redactTextDetailed(text: string): { text: string; count: number; values: string[] } {
+    if (this.size === 0 || !text) return { text, count: 0, values: [] };
     const found = new Set<string>();
-    return { text: this.replaceKnown(text, found), count: found.size };
+    return { text: this.replaceKnown(text, found), count: found.size, values: [...found] };
   }
 
   /**
@@ -85,14 +91,20 @@ export class Vault {
    * how many distinct known values were swapped out.
    */
   redactBody(body: string): { body: string; count: number } {
-    if (this.size === 0 || !body) return { body, count: 0 };
+    const result = this.redactBodyDetailed(body);
+    return { body: result.body, count: result.count };
+  }
+
+  /** Redact a request body and report which raw values matched. */
+  redactBodyDetailed(body: string): { body: string; count: number; values: string[] } {
+    if (this.size === 0 || !body) return { body, count: 0, values: [] };
     const found = new Set<string>();
     const replace = (s: string): string => this.replaceKnown(s, found);
     try {
       const mapped = mapStrings(JSON.parse(body), replace);
-      return { body: found.size > 0 ? JSON.stringify(mapped) : body, count: found.size };
+      return { body: found.size > 0 ? JSON.stringify(mapped) : body, count: found.size, values: [...found] };
     } catch {
-      return { body: replace(body), count: found.size };
+      return { body: replace(body), count: found.size, values: [...found] };
     }
   }
 
@@ -151,7 +163,12 @@ export class Vault {
    * body backstop catches numeric-looking values that survived that semantic pass.
    */
   leakCount(body: string): number {
-    if (this.size === 0 || !body) return 0;
+    return this.leakValues(body).length;
+  }
+
+  /** Raw registered/detected values that still survive in already-redacted outbound text/body. */
+  leakValues(body: string): string[] {
+    if (this.size === 0 || !body) return [];
     const strings: string[] = [];
     let masked: string | undefined;
     try {
@@ -160,7 +177,7 @@ export class Vault {
     } catch {
       // Non-JSON: the whole raw body is scanned for any known value below.
     }
-    let n = 0;
+    const leaked: string[] = [];
     for (const v of this.values) {
       const stringLeak = strings.some((s) => containsKnownOutsidePaths(s, v));
       // For valid JSON, string contents are masked out, so the backstop scans only primitives and
@@ -168,9 +185,9 @@ export class Vault {
       // registered `12345678` is not flagged inside an unrelated `99912345678`).
       const primitiveLeak =
         masked === undefined ? containsKnownOutsidePaths(body, v) : containsKnownPrimitive(masked, v);
-      if (stringLeak || primitiveLeak) n++;
+      if (stringLeak || primitiveLeak) leaked.push(v);
     }
-    return n;
+    return leaked;
   }
 
   /**

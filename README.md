@@ -12,8 +12,8 @@ instead of forwarding it. The exact boundary and deliberate exceptions are scope
 
 ## Who it's for
 
-Individual developers using coding agents such as **Claude Code**, **Codex**, and **Pi** who do not
-want real keys copied into provider request logs or long-lived model context.
+Individual developers using the coding agents ficta supports today — **Claude Code**, **Codex**, and
+**Pi** — who do not want real keys copied into provider request logs or long-lived model context.
 
 ficta is personal secret-hygiene tooling. It is **not** enterprise DLP, a compliance product, or a
 sandbox.
@@ -103,10 +103,24 @@ See [`docs/threat-model.md`](./docs/threat-model.md) for the full boundary.
 | --- | --- | --- |
 | Claude Code | Verified | Uses Anthropic base URL routing. |
 | Codex | Verified | Supports API-key and ChatGPT/OAuth flows. |
-| Pi | Beta | Routes built-in Anthropic/OpenAI providers via a temporary Pi extension. |
+| Pi | Beta | Routes built-in `anthropic`/`openai`/`openai-codex` providers via an ephemeral `PI_CODING_AGENT_DIR` + `models.json` base-URL override. Redaction verified; response-restore on the `openai-codex` path is a known open issue (see Pi notes). |
 
 "Verified" means the adapter is covered by automated routing/redaction tests and maintainer local
-runs. Agent CLIs change over time, so run `ficta doctor <agent>` before relying on a setup.
+runs, including a live end-to-end check (`pnpm test:e2e`) that drives the real agent against the
+real provider and asserts a canary secret is redacted on the wire (see
+[`test/e2e/README.md`](./test/e2e/README.md)). Agent CLIs change over time, so run
+`ficta doctor <agent>` before relying on a setup.
+
+ficta only supports CLI agents that route **all** of their model traffic through its proxy. **IDE
+clients such as Cursor are not supported** — their agentic features (Agent, Edit, Tab) bypass a
+custom base URL, so secrets could reach the provider unredacted. See the
+[threat model](./docs/threat-model.md#ide-clients-cursor-etc).
+
+Pi notes (Beta): only the built-in `anthropic`/`openai`/`openai-codex` providers are routed;
+user-defined providers point at their own upstreams and are not covered. Wire redaction is verified,
+but there is a **known open issue**: response-restore does not yet apply to Pi's `openai-codex`
+(ChatGPT-backend) responses, so a `FICTA_…` placeholder appears in Pi's output instead of the real
+value (the secret is still kept out of the model — this is a round-trip bug, not a leak).
 
 Non-model commands such as `--help` and `--version` pass through to the real agent without starting
 a proxy.
@@ -120,7 +134,9 @@ a proxy.
 5. Outbound model requests are redacted and checked fail-closed.
 6. Model responses are restored locally before your agent sees them.
 
-Raw request/response body logging is off by default. ficta has no telemetry.
+Raw request/response body logging is off by default. Each run writes local metadata-only
+protection stats (`stats.json`) under the run log directory, and the wrapper prints a session
+summary on exit. ficta has no telemetry.
 
 ## Common commands
 

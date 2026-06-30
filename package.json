@@ -70,6 +70,8 @@
     "update": "pnpm up -i -L",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "verify:live": "pnpm verify && pnpm test:e2e",
     "bench": "tsx bench/redaction-bench.mts",
     "bench:e2e": "tsx bench/e2e-bench.mts",
     "typecheck": "tsc --noEmit",

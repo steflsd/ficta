@@ -9,7 +9,7 @@ import {
   codexPersistedFictaCleanupOverrides,
   findAgentIntegration,
   piAgent,
-  piProviderExtension,
+  piModelsConfig,
 } from "../src/plugins/index.js";
 
 const BASE = "http://127.0.0.1:8787";
@@ -157,30 +157,51 @@ describe("agent integration plugins", () => {
     expect(plan?.args).toEqual(["exec", "hello"]);
   });
 
-  it("configures Pi with a temporary provider override extension", async () => {
+  it("routes Pi through an ephemeral PI_CODING_AGENT_DIR with a ficta models.json", async () => {
+    const sourceDir = mkdtempSync(join(tmpdir(), "ficta-pi-src-"));
+    writeFileSync(join(sourceDir, "auth.json"), '{"anthropic":{}}');
+    writeFileSync(join(sourceDir, "settings.json"), '{"defaultProvider":"openai-codex"}');
+    writeFileSync(
+      join(sourceDir, "models.json"),
+      '{"providers":{"minimax":{"baseUrl":"https://api.minimax.io/anthropic"}}}',
+    );
+
     const plan = piAgent.configureLaunch({
       baseUrl: BASE,
-      args: ["--version"],
+      args: ["-p", "hello"],
       realExecutable: "/bin/pi",
-      env: {},
+      env: { PI_CODING_AGENT_DIR: sourceDir },
       cwd: process.cwd(),
     });
-    const extensionPath = plan.args[1];
+    const agentDir = plan.env.PI_CODING_AGENT_DIR as string;
 
     expect(plan.executable).toBe("/bin/pi");
-    expect(plan.args[0]).toBe("-e");
-    expect(plan.args.slice(2)).toEqual(["--version"]);
-    expect(plan.env.FICTA_BASE_URL).toBe(BASE);
-    expect(extensionPath).toBeTruthy();
-    expect(readFileSync(extensionPath ?? "", "utf8")).toContain('pi.registerProvider("anthropic"');
+    expect(plan.args).toEqual(["-p", "hello"]); // no extension injection
+    expect(agentDir).toBeTruthy();
+    expect(agentDir).not.toBe(sourceDir);
+
+    // Real auth/settings are mirrored so Pi keeps its credentials.
+    expect(existsSync(join(agentDir, "auth.json"))).toBe(true);
+    expect(existsSync(join(agentDir, "settings.json"))).toBe(true);
+
+    // models.json routes built-ins through ficta and preserves the custom provider.
+    const models = JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"));
+    expect(models.providers.anthropic.baseUrl).toBe(BASE);
+    expect(models.providers.openai.baseUrl).toBe(`${BASE}/v1`);
+    expect(models.providers["openai-codex"].baseUrl).toBe(`${BASE}/backend-api`);
+    expect(models.providers.minimax.baseUrl).toBe("https://api.minimax.io/anthropic"); // untouched
 
     await plan.cleanup?.();
-    expect(existsSync(extensionPath ?? "")).toBe(false);
+    expect(existsSync(agentDir)).toBe(false);
   });
 
-  it("Pi extension routes Anthropic and OpenAI built-in providers through /v1", () => {
-    const source = piProviderExtension();
-    expect(source).toContain('pi.registerProvider("anthropic", { baseUrl: v1 })');
-    expect(source).toContain('pi.registerProvider("openai", { baseUrl: v1 })');
+  it("piModelsConfig overrides built-in providers and preserves custom ones", () => {
+    const out = JSON.parse(
+      piModelsConfig(BASE, '{"providers":{"minimax":{"baseUrl":"https://api.minimax.io/anthropic"}}}'),
+    );
+    expect(out.providers.anthropic.baseUrl).toBe(BASE);
+    expect(out.providers.openai.baseUrl).toBe(`${BASE}/v1`);
+    expect(out.providers["openai-codex"].baseUrl).toBe(`${BASE}/backend-api`);
+    expect(out.providers.minimax.baseUrl).toBe("https://api.minimax.io/anthropic");
   });
 });

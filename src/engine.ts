@@ -29,6 +29,27 @@ export interface TextRedactionResult {
   leaks: number;
 }
 
+/** Safe metadata about a protected value that matched. Never includes the protected literal. */
+export interface ProtectionHit {
+  name: string;
+  source: string;
+  plugin?: string;
+  kind?: ProtectedValue["kind"];
+  confidence?: ProtectedValue["confidence"];
+}
+
+export interface BodyRedactionDetails extends BodyRedactionResult {
+  hits: ProtectionHit[];
+  leakHits: ProtectionHit[];
+}
+
+export interface TextRedactionDetails extends TextRedactionResult {
+  hits: ProtectionHit[];
+  leakHits: ProtectionHit[];
+}
+
+type TextRedactionContext = Omit<DetectTextContext, "surface"> & { surface?: DetectTextContext["surface"] };
+
 /**
  * Security-critical orchestration layer. Plugins can only add values; the vault does the actual
  * replacement/restore/leak check. That keeps the core invariant testable and plugin-agnostic.
@@ -38,6 +59,7 @@ export class ProtectionEngine {
   private readonly hasDetectors: boolean;
   private readonly vault: Vault;
   private readonly policy: RegistryPolicy;
+  private readonly metadataByValue = new Map<string, ProtectedValue[]>();
 
   /** Safe launch-time snapshot of registry-source discovery. */
   readonly registry: PluginRegistrySnapshot;
@@ -55,6 +77,7 @@ export class ProtectionEngine {
     // registry.values are already policy-filtered by loadPluginRegistry; caller-supplied opts.values
     // pass through the same enforced exclusions so every ingress into the vault is consistent.
     const values = [...this.registry.values, ...this.admit(opts.values ?? [])];
+    for (const value of values) this.remember(value);
     this.registrySize = values.length;
     this.vault = new Vault(values);
   }
@@ -69,15 +92,47 @@ export class ProtectionEngine {
   }
 
   redactBody(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): BodyRedactionResult {
-    this.registerDetectedValues(body, { ...ctx, surface: "body" });
-    const redacted = this.vault.redactBody(body);
-    return { ...redacted, leaks: this.vault.leakCount(redacted.body) };
+    const details = this.redactBodyDetailed(body, ctx);
+    return { body: details.body, count: details.count, leaks: details.leaks };
   }
 
-  redactText(text: string, ctx: Omit<DetectTextContext, "surface"> = {}): TextRedactionResult {
-    this.registerDetectedValues(text, { ...ctx, surface: "header" });
-    const redacted = this.vault.redactText(text);
-    return { ...redacted, leaks: this.vault.leakCount(redacted.text) };
+  redactBodyDetailed(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): BodyRedactionDetails {
+    this.registerDetectedValues(body, { ...ctx, surface: "body" });
+    const redacted = this.vault.redactBodyDetailed(body);
+    const leakValues = this.vault.leakValues(redacted.body);
+    return {
+      body: redacted.body,
+      count: redacted.count,
+      leaks: leakValues.length,
+      hits: this.hitsFor(redacted.values),
+      leakHits: this.hitsFor(leakValues),
+    };
+  }
+
+  redactText(text: string, ctx: TextRedactionContext = {}): TextRedactionResult {
+    const details = this.redactTextDetailed(text, ctx);
+    return { text: details.text, count: details.count, leaks: details.leaks };
+  }
+
+  redactTextDetailed(text: string, ctx: TextRedactionContext = {}): TextRedactionDetails {
+    const { surface = "header", ...rest } = ctx;
+    this.registerDetectedValues(text, { ...rest, surface });
+    const redacted = this.vault.redactTextDetailed(text);
+    const leakValues = this.vault.leakValues(redacted.text);
+    return {
+      text: redacted.text,
+      count: redacted.count,
+      leaks: leakValues.length,
+      hits: this.hitsFor(redacted.values),
+      leakHits: this.hitsFor(leakValues),
+    };
+  }
+
+  /** Conservative raw-value membership check for deciding whether derived metadata is safe to log. */
+  containsProtectedValue(text: string): boolean {
+    if (!text) return false;
+    for (const value of this.metadataByValue.keys()) if (text.includes(value)) return true;
+    return false;
   }
 
   restoreText(text: string): string {
@@ -109,7 +164,9 @@ export class ProtectionEngine {
       }
       if (detected.length === 0) continue;
       const candidates = detected.map((value) => ({ ...value, plugin: value.plugin ?? plugin.name }));
-      added += this.vault.register(this.admit(candidates));
+      const admitted = this.admit(candidates);
+      for (const value of admitted) this.remember(value);
+      added += this.vault.register(admitted);
     }
     return added;
   }
@@ -118,4 +175,46 @@ export class ProtectionEngine {
   private admit(values: readonly ProtectedValue[]): ProtectedValue[] {
     return values.filter((value) => !protectedValueExcludedBy(value, this.policy));
   }
+
+  private remember(value: ProtectedValue): void {
+    if (!value.value) return;
+    const existing = this.metadataByValue.get(value.value) ?? [];
+    existing.push(value);
+    this.metadataByValue.set(value.value, existing);
+  }
+
+  private hitsFor(values: readonly string[]): ProtectionHit[] {
+    const hits: ProtectionHit[] = [];
+    const seen = new Set<string>();
+    for (const raw of values) {
+      const value = this.metadataByValue.get(raw)?.[0];
+      const hit = value === undefined ? unknownHit() : this.hitFromProtectedValue(value);
+      const key = JSON.stringify(hit);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits.push(hit);
+    }
+    return hits;
+  }
+
+  private hitFromProtectedValue(value: ProtectedValue): ProtectionHit {
+    const hit: ProtectionHit = {
+      name: this.safeMetadataField(value.name, "<redacted-name>"),
+      source: this.safeMetadataField(value.source, "<redacted-source>"),
+    };
+    if (value.plugin) hit.plugin = this.safeMetadataField(value.plugin, "<redacted-plugin>");
+    if (value.kind) hit.kind = value.kind;
+    if (value.confidence) hit.confidence = value.confidence;
+    return hit;
+  }
+
+  private safeMetadataField(value: string | undefined, fallback: string): string {
+    const text = value?.trim();
+    if (!text) return fallback;
+    return this.containsProtectedValue(text) ? fallback : text;
+  }
+}
+
+function unknownHit(): ProtectionHit {
+  return { name: "<unknown>", source: "unknown" };
 }
