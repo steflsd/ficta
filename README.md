@@ -103,7 +103,7 @@ See [`docs/threat-model.md`](./docs/threat-model.md) for the full boundary.
 | --- | --- | --- |
 | Claude Code | Verified | Uses Anthropic base URL routing. |
 | Codex | Verified | Supports API-key and ChatGPT/OAuth flows. |
-| Pi | Beta | Routes built-in `anthropic`/`openai`/`openai-codex` providers via an ephemeral `PI_CODING_AGENT_DIR` + `models.json` base-URL override. Redaction verified; response-restore on the `openai-codex` path is a known open issue (see Pi notes). |
+| Pi | Verified | Routes built-in `anthropic`/`openai`/`openai-codex` providers via an ephemeral `PI_CODING_AGENT_DIR` + `models.json` base-URL override. |
 
 "Verified" means the adapter is covered by automated routing/redaction tests and maintainer local
 runs, including a live end-to-end check (`pnpm test:e2e`) that drives the real agent against the
@@ -116,11 +116,8 @@ clients such as Cursor are not supported** — their agentic features (Agent, Ed
 custom base URL, so secrets could reach the provider unredacted. See the
 [threat model](./docs/threat-model.md#ide-clients-cursor-etc).
 
-Pi notes (Beta): only the built-in `anthropic`/`openai`/`openai-codex` providers are routed;
-user-defined providers point at their own upstreams and are not covered. Wire redaction is verified,
-but there is a **known open issue**: response-restore does not yet apply to Pi's `openai-codex`
-(ChatGPT-backend) responses, so a `FICTA_…` placeholder appears in Pi's output instead of the real
-value (the secret is still kept out of the model — this is a round-trip bug, not a leak).
+Pi notes: only the built-in `anthropic`/`openai`/`openai-codex` providers are routed; user-defined
+providers point at their own upstreams and are not covered.
 
 Non-model commands such as `--help` and `--version` pass through to the real agent without starting
 a proxy.

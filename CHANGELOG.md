@@ -13,11 +13,8 @@
 
 ### Fixed
 
-- Fixed the Pi adapter, which did not actually route model traffic through ficta. Pi ignores an extension's `registerProvider({ baseUrl })` override (it patches model copies after load and the override never reaches the request layer), so the previous temp-extension approach left Pi talking directly to the real backends — including the user's default `openai-codex` provider. ficta now launches Pi with `PI_CODING_AGENT_DIR` set to an ephemeral agent dir that mirrors the user's real auth/settings and swaps in a generated `models.json` overriding the base URLs of the built-in `anthropic`/`openai`/`openai-codex` providers, the only override Pi reliably honors. Redaction on the wire is verified live for `openai-codex`; user-defined providers point at their own upstreams and remain unrouted. Pi stays **Beta** because of the known issue below.
-
-### Known issues
-
-- Pi response-restore does not yet apply to the `openai-codex` (ChatGPT-backend) response path: the model's echoed `FICTA_…` placeholder is not restored to the real value in Pi's output, so a placeholder can surface in Pi's responses or written files. The secret is still kept out of the model (redaction works) — this is a round-trip bug, not a leak.
+- Fixed the Pi adapter, which did not actually route model traffic through ficta. Pi ignores an extension's `registerProvider({ baseUrl })` override (it patches model copies after load and the override never reaches the request layer), so the previous temp-extension approach left Pi talking directly to the real backends — including the user's default `openai-codex` provider. ficta now launches Pi with `PI_CODING_AGENT_DIR` set to an ephemeral agent dir that mirrors the user's real auth/settings and swaps in a generated `models.json` overriding the base URLs of the built-in `anthropic`/`openai`/`openai-codex` providers, the only override Pi reliably honors. Redaction and restore round-trip are verified live for `openai-codex`/`gpt-5.5`; user-defined providers point at their own upstreams and remain unrouted.
+- Restored surrogates in streamed SSE responses that arrive with no `content-type` header — notably the ChatGPT/Codex backend (`/backend-api/codex/responses`). Previously the missing content-type made the restore check fail closed-to-passthrough, so `FICTA_…` placeholders leaked into the agent's output instead of the real values. ficta now treats a content-type-less response on a known model wire (anthropic / openai-chat / openai-responses) as that wire's event stream and restores it. This is what let Pi's `openai-codex` path complete its round-trip.
 
 ## 0.1.0-beta.5 - 2026-06-30
 

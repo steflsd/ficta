@@ -220,7 +220,12 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     // alongside a forwarded Transfer-Encoding: chunked.
     resHeaders.delete("transfer-encoding");
     const contentType = resHeaders.get("content-type") ?? "";
-    const restoreResponse = protect && isRestorableContentType(contentType);
+    // Some upstreams stream SSE with no content-type header — notably the ChatGPT/Codex backend
+    // (`/backend-api/codex/responses`). When the type is missing but the request is a known model
+    // wire, the response is that wire's event stream, so restore it instead of passing surrogates
+    // through verbatim (which would leak FICTA_ placeholders into the agent's output).
+    const treatAsEventStream = isEventStreamContentType(contentType) || (contentType === "" && wire !== "unknown");
+    const restoreResponse = protect && (isRestorableContentType(contentType) || treatAsEventStream);
 
     if (upstreamRes.body) {
       const [toClient, toLog] = upstreamRes.body.tee();
@@ -228,12 +233,12 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
       if (!restoreResponse) {
         return new Response(toClient, { status: upstreamRes.status, headers: resHeaders });
       }
-      if (isEventStreamContentType(contentType)) {
+      if (treatAsEventStream) {
         // The per-wire adapter reassembles surrogates split across SSE events; an unrecognized wire
         // uses the NOOP adapter, which still restores whole surrogates in each event JSON-safely
         // (see Vault.restoreSseRecord). Cross-event reassembly needs a known wire schema, so it is
         // intentionally not attempted here.
-        return new Response(toClient.pipeThrough(engine.restoreEventStream(wireOf(url.pathname))), {
+        return new Response(toClient.pipeThrough(engine.restoreEventStream(wire)), {
           status: upstreamRes.status,
           headers: resHeaders,
         });

@@ -420,6 +420,83 @@ describe("proxy hardening", () => {
     }
   });
 
+  it("restores surrogates in SSE responses that arrive without a content-type (ChatGPT/Codex backend)", async () => {
+    const secret = "corova-codex-backend-secret";
+    const originalEnv = {
+      FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
+      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
+      FICTA_SILENT: process.env.FICTA_SILENT,
+    };
+
+    let received = "";
+    const upstream = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        received = body;
+        const surrogate = body.match(/FICTA_[0-9a-f]{32}/)?.[0] ?? "";
+        const sse = `event: response.output_text.delta\ndata: ${JSON.stringify({
+          type: "response.output_text.delta",
+          delta: `BUILD_REF is ${surrogate}.`,
+        })}\n\n`;
+        // Intentionally no content-type header — mimics the ChatGPT/Codex backend SSE stream.
+        res.writeHead(200);
+        res.end(sse);
+      });
+    });
+
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      const upstreamPort = await listen(upstream);
+      process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
+      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
+      process.env.FICTA_SILENT = "1";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({
+        port: 0,
+        plugins: [
+          {
+            kind: "registry-source",
+            name: "fixture-registry",
+            config: { bindings: [], sections: [], envDefaults: {} },
+            setup: { registrySources: () => [] },
+            discover: () => [],
+            loadValues: () => [
+              { name: "FIXTURE_SERVICE", value: secret, source: "fixture", kind: "secret", confidence: "exact" },
+            ],
+          },
+        ],
+      });
+
+      // /responses path → openai-responses wire; the missing content-type must not skip restore.
+      const res = await fetch(`http://127.0.0.1:${proxy.port}/backend-api/codex/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: secret }),
+      });
+      const text = await res.text();
+
+      expect(res.status).toBe(200);
+      expect(received).not.toContain(secret); // redacted on egress
+      expect(received).toMatch(/FICTA_[0-9a-f]{32}/);
+      expect(text).toContain(secret); // restored for the client despite no content-type
+      expect(text).not.toMatch(/FICTA_[0-9a-f]{32}/); // no placeholder leaked through
+    } finally {
+      proxy?.close();
+      await close(upstream);
+      for (const [k, v] of Object.entries(originalEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it("redacts registered secrets in query strings", async () => {
     const originalEnv = {
       FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
