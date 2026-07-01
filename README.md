@@ -1,6 +1,6 @@
-# ficta
+![ficta — a local secret airlock for coding agents](assets/ficta-overview.png)
 
-**A local secret airlock for coding agents.**
+# ficta
 
 ficta sits between your coding agent and the model provider. It replaces the secret values you
 already manage in `.env`, process env, or Doppler with deterministic placeholders before model
