@@ -50,12 +50,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify
-        run: pnpm verify
+        run: pnpm --filter @steflsd/ficta verify
 
       - name: Build
-        run: pnpm build
+        run: pnpm --filter @steflsd/ficta build
 
       - name: Check release metadata
+        working-directory: packages/ficta
         run: pnpm release:check
 
       - name: Verify release artifacts are committed
@@ -67,9 +68,11 @@ jobs:
           npm --version
 
       - name: Publish npm package
+        working-directory: packages/ficta
         run: node scripts/publish.mjs
 
       - name: Extract release notes
+        working-directory: packages/ficta
         run: |
           VERSION="${RELEASE_TAG#v}"
           node scripts/release-notes.mjs extract --version "$VERSION" --tag "$RELEASE_TAG" --out /tmp/release-notes.md

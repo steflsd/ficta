@@ -14,3 +14,6 @@ logs/
 # package/build artifacts
 *.tgz
 coverage/
+.turbo/
+.output/
+.nitro/

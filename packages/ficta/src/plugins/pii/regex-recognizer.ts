@@ -16,7 +16,9 @@ interface StructuredPattern {
 const PATTERNS: readonly StructuredPattern[] = [
   { category: "email", regex: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, confidence: "high" },
   { category: "us-ssn", regex: /\b\d{3}-\d{2}-\d{4}\b/g, confidence: "high" },
-  { category: "credit-card", regex: /\b(?:\d[ -]?){13,19}\b/g, confidence: "high", validate: isLuhnValid },
+  // Anchored to start and end on a digit (via `\d(?:[ -]?\d){12,18}`) so a trailing space/hyphen
+  // after the number is never pulled into the match; 13-19 digits total.
+  { category: "credit-card", regex: /\b\d(?:[ -]?\d){12,18}\b/g, confidence: "high", validate: isLuhnValid },
 ];
 
 /** In-process, synchronous structured-PII recognizer — the default (always-available) backend. */

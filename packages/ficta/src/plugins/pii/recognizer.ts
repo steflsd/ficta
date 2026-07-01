@@ -3,7 +3,7 @@ import type { DetectTextContext, ProtectedValue } from "../types.js";
 /**
  * The detection-backend seam. A recognizer finds PII spans in a chunk of text and returns them as
  * {@link ProtectedValue}s (`kind: "pii"`); it does not tokenize or restore — the engine/vault own
- * that. This is the swap point behind the (forthcoming) PII detector plugin: an in-process regex
+ * that. This is the swap point behind the PII detector plugin (`pii/index.ts`): an in-process regex
  * recognizer, an out-of-process Presidio/NER sidecar, or a cloud PII service (AWS Comprehend, Azure)
  * are interchangeable implementations of this one interface.
  *

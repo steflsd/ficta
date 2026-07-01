@@ -32,15 +32,17 @@ if (dryRun) {
       : `${name}@${version} is not published; validating package contents before publish.`,
   );
   validatePack();
+  advanceLatestForBetaPhase(name, version, distTag);
   process.exit(0);
 }
 
 if (published) {
-  console.log(`Skipping ${name}@${version}: already published`);
-  process.exit(0);
+  console.log(`Skipping publish for ${name}@${version}: already published`);
+} else {
+  run("npm", ["publish", "--access", "public", "--provenance", "--ignore-scripts", "--tag", distTag]);
 }
 
-run("npm", ["publish", "--access", "public", "--provenance", "--ignore-scripts", "--tag", distTag]);
+advanceLatestForBetaPhase(name, version, distTag);
 
 function commandForPlatform(command) {
   return process.platform === "win32" ? `${command}.cmd` : command;
@@ -120,6 +122,72 @@ function isPublished(packageName, packageVersion) {
 function npmDistTag(packageVersion) {
   const prerelease = /^\d+\.\d+\.\d+-([0-9A-Za-z.-]+)$/.exec(packageVersion)?.[1];
   return prerelease ? (prerelease.split(".")[0] ?? "next") : "latest";
+}
+
+/**
+ * During the pre-1.0 beta phase, also point `latest` at the newest prerelease so bare installs
+ * (`pnpm add -g @steflsd/ficta`, `pnpm update -L -g`) pick it up. Self-terminating and safe:
+ * once `latest` points at a stable release, betas never move it again.
+ */
+function advanceLatestForBetaPhase(packageName, packageVersion, tag) {
+  if (tag === "latest") return; // a stable publish already set `latest`
+
+  const currentLatest = currentDistTagVersion(packageName);
+
+  if (currentLatest && !isPrerelease(currentLatest)) {
+    console.log(`latest points at stable ${currentLatest}; leaving it unchanged`);
+    return;
+  }
+  if (currentLatest && compareSemver(packageVersion, currentLatest) <= 0) {
+    console.log(`latest ${currentLatest} is already >= ${packageVersion}; leaving it unchanged`);
+    return;
+  }
+
+  console.log(`Advancing latest -> ${packageVersion} (beta phase)${dryRun ? " (dry run)" : ""}`);
+  if (dryRun) return;
+  run("npm", ["dist-tag", "add", `${packageName}@${packageVersion}`, "latest"]);
+}
+
+function currentDistTagVersion(packageName) {
+  const result = spawnSync(commandForPlatform("npm"), ["view", packageName, "dist-tags.latest", "--json"], {
+    encoding: "utf8",
+    stdio: ["inherit", "pipe", "pipe"],
+  });
+
+  if (result.status === 0) {
+    const stdout = result.stdout.trim();
+    return stdout ? String(JSON.parse(stdout)) : null;
+  }
+
+  const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+  if (output.includes("E404") || output.includes("404 Not Found")) return null;
+
+  throw new Error(
+    output ? `Failed to read dist-tags for ${packageName}\n${output}` : `Failed to read dist-tags for ${packageName}`,
+  );
+}
+
+function isPrerelease(version) {
+  return version.includes("-");
+}
+
+function compareSemver(a, b) {
+  const parsedA = parseComparableSemver(a);
+  const parsedB = parseComparableSemver(b);
+  for (let i = 0; i < 3; i++) {
+    const diff = parsedA.core[i] - parsedB.core[i];
+    if (diff !== 0) return diff;
+  }
+  if (!parsedA.pre && parsedB.pre) return 1;
+  if (parsedA.pre && !parsedB.pre) return -1;
+  if (!parsedA.pre && !parsedB.pre) return 0;
+  return parsedA.pre.localeCompare(parsedB.pre, undefined, { numeric: true });
+}
+
+function parseComparableSemver(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
+  if (!match) throw new Error(`invalid semver: ${version}`);
+  return { core: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4] ?? "" };
 }
 
 function escapeRegExp(value) {

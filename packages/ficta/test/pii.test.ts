@@ -25,6 +25,12 @@ describe("pii regex recognizer", () => {
     const found = regexRecognizer.detect(`card ${NOT_A_CARD}`, { surface: "body" }) as ProtectedValue[];
     expect(found.some((v) => v.name === "credit-card")).toBe(false);
   });
+
+  it("does not absorb a trailing separator into the card value", () => {
+    const found = regexRecognizer.detect(`card ${VISA} expires soon`, { surface: "body" }) as ProtectedValue[];
+    // The match must end on the last digit — no trailing space pulled in (would mangle vendor text).
+    expect(found.find((v) => v.name === "credit-card")?.value).toBe(VISA);
+  });
 });
 
 describe("pii detector plugin", () => {
@@ -55,6 +61,17 @@ describe("pii detector plugin", () => {
     expect(redacted.body).not.toContain(EMAIL);
     expect(redacted.body).toMatch(/FICTA_[0-9a-f]{32}/);
     expect(engine.restoreText(redacted.body)).toContain(EMAIL);
+  });
+
+  it("reports `protecting` only when actually active, not merely present", () => {
+    delete process.env[ENV];
+    const off = new ProtectionEngine({ plugins: [piiPlugin] });
+    expect(off.enabled).toBe(true); // detector is present
+    expect(off.protecting).toBe(false); // ...but disabled → pure passthrough, banner must not claim redaction
+
+    process.env[ENV] = "1";
+    const on = new ProtectionEngine({ plugins: [piiPlugin] });
+    expect(on.protecting).toBe(true);
   });
 
   it("declares a config binding and reports its status via discover()", () => {

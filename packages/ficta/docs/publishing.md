@@ -52,7 +52,10 @@ Start with developers who already feel the pain:
 
 - Label early releases as beta / pre-1.0.
 - Publish the npm package as `@steflsd/ficta` with the `beta` dist-tag until field-tested.
-- Document beta installs as global package-manager installs (`npm install -g @steflsd/ficta@beta`, `pnpm add -g @steflsd/ficta@beta`, `bun install --global @steflsd/ficta@beta`) until a `latest` release exists.
+- During the beta phase the publish step also advances `latest` to the newest beta, so a plain
+  `pnpm add -g @steflsd/ficta` works. `@beta` stays the explicit channel and keeps working after
+  a stable release exists (from then on `latest` tracks stable, not betas).
+- Document beta installs both ways: plain (`npm install -g @steflsd/ficta`, `pnpm add -g @steflsd/ficta`, `bun install --global @steflsd/ficta`) and the stable-proof explicit form (`@beta`).
 - Keep [`threat-model.md`](./threat-model.md) and [`SECURITY.md`](../SECURITY.md) prominent.
 - Encourage `ficta doctor <agent>` before first use.
 - Use fake fixture values for redaction demos; never ask users to prove behavior with real secrets.
@@ -76,6 +79,10 @@ git push origin "v$VERSION"
 The tag push triggers CI publishing with npm provenance and creates/updates the GitHub Release from
 the matching `CHANGELOG.md` section. Prerelease versions publish with the first prerelease identifier
 as the npm dist-tag (`0.1.0-beta.1` -> `beta`); stable versions publish as `latest`.
+
+While no stable release exists, the publish step additionally advances `latest` to the newest beta,
+so bare installs and `pnpm update -L -g` pick it up. This is guarded: once `latest` points at a
+stable version, later betas never move it — a post-1.0 `x.y.z-beta.n` publishes under `beta` only.
 
 For the first stable release from a beta, use `pnpm release:stable` to drop the prerelease suffix
 (for example `0.1.0-beta.4` -> `0.1.0`). For later stable releases, use `pnpm release:patch` /

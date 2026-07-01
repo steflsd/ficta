@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Added opt-in, best-effort PII detection. A new built-in `pii` detector plugin redacts structured PII — email addresses, US SSNs, and Luhn-validated card numbers — through the same tokenize-on-egress / restore-on-response path as registered secrets. It is off by default (enable with `FICTA_PII_ENABLED=1` or `pii.enabled`), and detection backends are pluggable behind a new exported `PiiRecognizer` contract so an out-of-process NER/Presidio recognizer can be added later. Detection is best-effort — a reduction, not the exact-match guarantee registered values receive.
+
+### Changed
+
+- Detectors are now first-class config-driven plugins. A `DetectorPlugin` may declare `config`/`setup`/`discover` (previously exclusive to registry sources), so a detector self-gates on its own `enabled` flag and surfaces in `ficta setup`, `config.toml`, and the startup banner; `loadValues` stays registry-source-only. The detection path is also now asynchronous — plugin `detectText` may return a `Promise`, which the engine awaits on the request path — so recognizers can call out of process. Both are exposed through the `@steflsd/ficta/plugins` entry point.
+- Restructured the repository into a pnpm workspace: the package moved from the repo root to `packages/ficta`, with the root now a private orchestrator and a new `apps/web` chat UI alongside it. The published `@steflsd/ficta` package is byte-for-byte unchanged (identical tarball). Source-checkout developers must re-run `ficta install` after pulling, because the dev shim's launcher records an absolute path to `bin/ficta.mjs`.
+
 ## 0.1.0-beta.6 - 2026-06-30
 
 ### Added

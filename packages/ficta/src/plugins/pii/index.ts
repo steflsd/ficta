@@ -9,8 +9,8 @@ const ENV_ENABLED = "FICTA_PII_ENABLED";
 /**
  * Recognizers are the swap point behind this plugin: the in-process `regex` recognizer (sync) ships
  * today. An async recognizer — e.g. a Microsoft Presidio / NER sidecar for names/addresses/orgs —
- * plugs in here behind {@link PiiRecognizer} once the engine's detection path is made async (it is
- * synchronous today, so async recognizers are skipped in `detectText`).
+ * plugs in here behind {@link PiiRecognizer}: the engine's detection path is async, so `detectText`
+ * awaits each recognizer (sync or async).
  */
 const recognizers: readonly PiiRecognizer[] = [regexRecognizer];
 

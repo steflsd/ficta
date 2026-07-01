@@ -13,6 +13,9 @@ export interface RedactionEngine {
   /** True when the engine may transform outbound data (has registered values or detectors). */
   readonly enabled: boolean;
 
+  /** True when protection is actually configured (registered values or an active detector). */
+  readonly protecting: boolean;
+
   /**
    * Redact a request body (JSON-aware) and report which values matched / leaked. Async because
    * detection may hit an out-of-process recognizer (e.g. a Presidio/NER sidecar).

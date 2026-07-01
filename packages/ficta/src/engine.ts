@@ -63,9 +63,27 @@ export class ProtectionEngine implements RedactionEngine {
     return this.vault.size;
   }
 
-  /** True when this engine may transform outbound data. */
+  /** True when this engine may transform outbound data (has values or a detector is present). */
   get enabled(): boolean {
     return this.size > 0 || this.hasDetectors;
+  }
+
+  /**
+   * True when protection is actually *configured* — registered values, or a detector reporting
+   * itself active via `discover()`. Unlike `enabled` (true whenever a detector is merely present),
+   * this is false during pure passthrough (no values, detector disabled), so the banner and request
+   * path don't claim to redact when nothing is protected.
+   */
+  get protecting(): boolean {
+    if (this.size > 0) return true;
+    const inactive = new Set(["disabled", "not_found", "error"]);
+    for (const plugin of this.plugins) {
+      if (!plugin.detectText) continue;
+      const discoveries = this.registry.discoveries.filter((d) => d.plugin === plugin.name);
+      // A detector counts as active unless its own discovery explicitly reports it inactive.
+      if (discoveries.length === 0 || discoveries.some((d) => !inactive.has(d.status))) return true;
+    }
+    return false;
   }
 
   async redactBody(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): Promise<BodyRedactionResult> {

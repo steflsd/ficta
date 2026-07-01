@@ -1,99 +1,30 @@
 {
-  "name": "@steflsd/ficta",
-  "version": "0.1.0-beta.6",
-  "private": false,
+  "name": "ficta-monorepo",
+  "private": true,
   "type": "module",
-  "description": "Keep your registered secrets out of the LLM — local redaction proxy for coding agents",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/steflsd/ficta.git"
-  },
-  "bugs": {
-    "url": "https://github.com/steflsd/ficta/issues"
-  },
-  "homepage": "https://github.com/steflsd/ficta#readme",
-  "keywords": [
-    "ai",
-    "coding-agents",
-    "llm",
-    "privacy",
-    "redaction",
-    "secrets"
-  ],
+  "description": "Workspace root for ficta (packages/ficta) and its chat UI (apps/web). Not published.",
   "engines": {
     "node": ">=20"
   },
-  "bin": {
-    "ficta": "bin/ficta.mjs"
-  },
-  "exports": {
-    "./plugins": {
-      "types": "./dist/plugins/index.d.ts",
-      "import": "./dist/plugins/index.js"
-    }
-  },
-  "files": [
-    "bin/",
-    "dist/",
-    "docs/",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE",
-    "SECURITY.md",
-    "config.toml.example",
-    ".env.example"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
-    "ficta": "tsx src/cli.ts",
+    "//turbo": "Turbo-managed: cached, parallel across all packages. See turbo.json",
+    "build": "turbo run build",
+    "check": "turbo run check",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "verify": "turbo run check typecheck test",
+    "//pnpm": "pnpm-orchestrated: interactive / write / dev servers, not cached",
+    "check:fix": "pnpm -r check:fix",
+    "dev": "pnpm --filter @steflsd/ficta dev",
     "web:dev": "pnpm --filter @steflsd/ficta-web dev",
     "web:build": "pnpm --filter @steflsd/ficta-web build",
     "web:typecheck": "pnpm --filter @steflsd/ficta-web typecheck",
     "dev:all": "concurrently -k -n proxy,web -c blue,green \"pnpm dev\" \"pnpm web:dev\"",
-    "build": "tsc",
-    "verify": "pnpm check && pnpm typecheck && pnpm test",
-    "release:check": "node scripts/check-release.mjs",
-    "release:beta": "node scripts/release.mjs beta",
-    "release:stable": "node scripts/release.mjs stable",
-    "release:patch": "node scripts/release.mjs patch",
-    "release:minor": "node scripts/release.mjs minor",
-    "release:major": "node scripts/release.mjs major",
-    "publish:dry": "pnpm verify && pnpm build && node scripts/publish.mjs --dry-run",
-    "publish:npm": "pnpm verify && pnpm build && node scripts/publish.mjs",
-    "prepack": "pnpm build",
-    "prepublishOnly": "pnpm verify && pnpm release:check",
-    "format": "biome format --write .",
-    "lint": "biome lint .",
-    "check": "biome check .",
-    "check:fix": "biome check --write .",
-    "update": "pnpm up -r -i -L",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "verify:live": "pnpm verify && pnpm test:e2e",
-    "bench": "tsx bench/redaction-bench.mts",
-    "bench:e2e": "tsx bench/e2e-bench.mts",
-    "typecheck": "tsc --noEmit",
-    "knip": "knip"
-  },
-  "dependencies": {
-    "@clack/prompts": "^1.6.0",
-    "@hono/node-server": "^2.0.6",
-    "hono": "^4.12.27"
+    "update": "pnpm -r update -i -L"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.1",
-    "@types/node": "^26.0.1",
-    "concurrently": "^9.2.1",
-    "knip": "^6.23.0",
-    "tsx": "^4.19.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "concurrently": "^10.0.3",
+    "turbo": "^2.10.0"
   },
   "packageManager": "pnpm@11.9.0+sha512.bd682d5d03fe525ef7c9fd6780c6884d1e756ac4c9c9fe00c538782824310dcf90e3ddc4f53835f06dfaebd5085e41855e0bcbb3b60de2ac5bbab89e5036f03b"
 }

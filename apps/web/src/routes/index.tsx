@@ -50,7 +50,10 @@ function ChatPage() {
           <div key={message.id}>
             <strong>{message.role}: </strong>
             {message.parts.map((part, i) =>
-              part.type === "text" ? <span key={i}>{part.content}</span> : null,
+              part.type === "text" ? (
+                // biome-ignore lint/suspicious/noArrayIndexKey: streamed message parts are append-only, so the index is stable
+                <span key={i}>{part.content}</span>
+              ) : null,
             )}
           </div>
         ))}

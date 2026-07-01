@@ -46,7 +46,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     // Protect every outbound request body, query string, and non-auth header by default.
     // Provider/client paths change, and an "unknown" route can still carry conversation/tool
     // content; exact-match redaction is safe.
-    const protect = engine.enabled;
+    const protect = engine.protecting;
     const method = c.req.method;
     const wire = wireOf(url.pathname);
 
@@ -275,7 +275,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
         console.log(`  openai    ⇒    ${cfg.upstreams.openai}`);
         console.log(`  chatgpt   ⇒    ${cfg.upstreams.chatgpt}  (Codex OAuth)`);
         console.log(
-          `  vault          ${engine.size} known value(s)  ${engine.enabled ? "🔒 redacting up, restoring back" : "⚠ NONE loaded — passthrough"}`,
+          `  vault          ${engine.size} known value(s)  ${engine.protecting ? "🔒 redacting up, restoring back" : "⚠ NONE loaded — passthrough"}`,
         );
         console.log(`  registry`);
         for (const line of registryDiscoveryLines(
