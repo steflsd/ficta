@@ -5,9 +5,16 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 
 const dryRun = process.argv.includes("--dry-run");
-const unknownArgs = process.argv.slice(2).filter((arg) => arg !== "--dry-run");
-if (unknownArgs.length > 0) {
-  console.error("Usage: node scripts/publish.mjs [--dry-run]");
+// The publish itself authenticates via trusted publishing (OIDC), which does not authorize a
+// follow-up `npm dist-tag add`. In CI the two are split into separate steps so the dist-tag write
+// can carry its own automation token: the publish step passes --skip-advance-latest, and a
+// dedicated token-authed step passes --advance-latest-only. With no flags (local publish) both run.
+const advanceLatestOnly = process.argv.includes("--advance-latest-only");
+const skipAdvanceLatest = process.argv.includes("--skip-advance-latest");
+const KNOWN_FLAGS = new Set(["--dry-run", "--advance-latest-only", "--skip-advance-latest"]);
+const unknownArgs = process.argv.slice(2).filter((arg) => !KNOWN_FLAGS.has(arg));
+if (unknownArgs.length > 0 || (advanceLatestOnly && skipAdvanceLatest)) {
+  console.error("Usage: node scripts/publish.mjs [--dry-run] [--advance-latest-only | --skip-advance-latest]");
   process.exit(1);
 }
 
@@ -19,6 +26,13 @@ const distTag = npmDistTag(version);
 
 assertPackageMetadata();
 assertTagMatchesVersion(expectedTag, version);
+
+if (advanceLatestOnly) {
+  // Dedicated dist-tag step: the package is already published, so skip the publish preconditions.
+  advanceLatestForBetaPhase(name, version, distTag);
+  process.exit(0);
+}
+
 assertChangelogHasVersion(version);
 assertBuildOutputExists();
 
@@ -32,7 +46,7 @@ if (dryRun) {
       : `${name}@${version} is not published; validating package contents before publish.`,
   );
   validatePack();
-  advanceLatestForBetaPhase(name, version, distTag);
+  if (!skipAdvanceLatest) advanceLatestForBetaPhase(name, version, distTag);
   process.exit(0);
 }
 
@@ -42,7 +56,7 @@ if (published) {
   run("npm", ["publish", "--access", "public", "--provenance", "--ignore-scripts", "--tag", distTag]);
 }
 
-advanceLatestForBetaPhase(name, version, distTag);
+if (!skipAdvanceLatest) advanceLatestForBetaPhase(name, version, distTag);
 
 function commandForPlatform(command) {
   return process.platform === "win32" ? `${command}.cmd` : command;
@@ -145,7 +159,21 @@ function advanceLatestForBetaPhase(packageName, packageVersion, tag) {
 
   console.log(`Advancing latest -> ${packageVersion} (beta phase)${dryRun ? " (dry run)" : ""}`);
   if (dryRun) return;
-  run("npm", ["dist-tag", "add", `${packageName}@${packageVersion}`, "latest"]);
+  // Best-effort: the package is already published at this point, so a failure here (e.g. no
+  // 2FA-exempt automation token in CI, or an interactive OTP prompt) must not fail the release.
+  // Warn with the manual recovery command instead of throwing.
+  try {
+    run("npm", ["dist-tag", "add", `${packageName}@${packageVersion}`, "latest"]);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `\nwarning: ${name}@${packageVersion} published, but advancing the \`latest\` dist-tag failed.\n` +
+        `  latest still points at ${currentLatest ?? "(unset)"}.\n` +
+        `  Recover manually:  npm dist-tag add ${packageName}@${packageVersion} latest\n` +
+        `  In CI this needs an npm automation token (2FA-exempt) exported as NODE_AUTH_TOKEN.\n` +
+        `  ${detail}\n`,
+    );
+  }
 }
 
 function currentDistTagVersion(packageName) {

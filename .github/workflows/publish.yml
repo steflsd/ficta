@@ -69,7 +69,20 @@ jobs:
 
       - name: Publish npm package
         working-directory: packages/ficta
-        run: node scripts/publish.mjs
+        run: node scripts/publish.mjs --skip-advance-latest
+
+      # `npm publish` above authenticates via trusted publishing (OIDC), which does not authorize a
+      # follow-up `npm dist-tag add`. During the pre-1.0 beta phase we also point `latest` at the
+      # newest prerelease; that write needs a 2FA-exempt automation token. Kept as its own step so
+      # the OIDC publish never depends on the token, and non-blocking so a missing/invalid token
+      # can't fail an already-successful publish (latest can be advanced manually instead).
+      - name: Advance latest dist-tag (beta phase)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        working-directory: packages/ficta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/publish.mjs --advance-latest-only
 
       - name: Extract release notes
         working-directory: packages/ficta
