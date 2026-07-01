@@ -45,6 +45,15 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
     true,
   );
 
+  // PII detection is a first-class part of the gateway, so default it on; "best-effort MVP" is a
+  // caveat on the current recognizer's coverage, not a reason to ship the concept idle. The No path
+  // stays for the shared-proxy case (the regex can tokenize an email in CLI-agent code you didn't
+  // care about). !== "0" means on unless the user explicitly set FICTA_PII_ENABLED=0.
+  const piiEnabled = await promptConfirm(
+    "PII detection — built-in recognizer (emails, SSNs, cards; best-effort MVP, more recognizers like Presidio slot in later). Redact before the model, restore in responses?",
+    process.env.FICTA_PII_ENABLED !== "0",
+  );
+
   const logBodies = await promptConfirm(
     "Write raw request/response bodies to logs? (debug only; secrets may be written)",
     process.env.FICTA_LOG_BODIES === "1",
@@ -55,6 +64,8 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
     FICTA_REGISTRY_MIN_LEN: minLen,
     FICTA_REQUIRE_REGISTRY: FICTA_DEFAULTS.FICTA_REQUIRE_REGISTRY,
     FICTA_FAIL_CLOSED: FICTA_DEFAULTS.FICTA_FAIL_CLOSED,
+    // Persist the PII toggle as [pii] enabled so redaction is proxy policy, not a per-run flag.
+    FICTA_PII_ENABLED: piiEnabled ? "1" : "0",
     FICTA_LOG_BODIES: logBodies ? "1" : "0",
     FICTA_LOG_DIR: defaultLogDir(),
   };

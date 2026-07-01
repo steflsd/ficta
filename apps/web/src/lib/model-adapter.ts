@@ -31,8 +31,18 @@ export function createModelAdapter({ provider, model }: ModelChoice) {
   });
 }
 
+/** The server-side API key for the chosen provider is not configured. Distinct so the route can map
+ * it to a "server not configured" response instead of an upstream failure. Its message is safe to show
+ * (it names the missing env var, never a value). */
+export class MissingKeyError extends Error {
+  constructor(name: string) {
+    super(`${name} is not set on the ficta server; add it to apps/web/.env to reach the model`);
+    this.name = "MissingKeyError";
+  }
+}
+
 function requireKey(name: string): string {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} is not set server-side; required to reach the model via ficta`);
+  if (!value) throw new MissingKeyError(name);
   return value;
 }

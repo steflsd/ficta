@@ -134,11 +134,46 @@ configs = "current" # or "all" / ["dev", "staging", "prod"]
 project = ""
 # command = "doppler"
 timeout_ms = 5000
+
+[pii]
+enabled = false # set true to redact emails, SSNs, and card numbers before the model
 ```
 
 Set `FICTA_CONFIG_FILE=/path/to/config.toml` to use a different config file; `ficta setup` writes
 to that same path. Set `FICTA_CONFIG_FILE=0` to disable user config loading; setup will then refuse
 to run until you unset it or provide a real path.
+
+## Built-in detector plugin: `pii`
+
+Unlike the registry sources below — which load *exact* secrets to protect — the PII plugin is a
+**detector**: it inspects request text at runtime and redacts emails, US SSNs, and card numbers
+before the model hop, restoring them in the response. Detection is a *concept* backed by pluggable
+**recognizers**; today one in-process regex recognizer ships (the best-effort MVP), and an
+out-of-process Presidio/NER sidecar for names/addresses/orgs slots in behind the same interface
+later. Coverage is best-effort pattern matching, not a guarantee; see
+[`threat-model.md`](./threat-model.md).
+
+**Two defaults, and they differ on purpose:**
+
+- **Unconfigured proxy — off.** With no config file (`envDefaults: { FICTA_PII_ENABLED: "0" }`), a
+  bare proxy does not redact PII. A raw `ficta` run protects only *registered* secrets, never munging
+  request text unless you asked it to.
+- **After `ficta setup` — on.** The wizard's PII prompt defaults to **yes** and persists `[pii]
+  enabled = true`, because PII detection is a first-class part of the gateway. The one reason it stays
+  a prompt (with a No path) is the shared-proxy case: the regex can tokenize an email in CLI-agent
+  code you didn't care about.
+
+So "off by default" describes an *unconfigured* proxy; running the wizard turns it on. The persisted
+policy lives in TOML:
+
+```toml
+[pii]
+enabled = true
+```
+
+Equivalently, `FICTA_PII_ENABLED=1` turns it on for a single run and `FICTA_PII_ENABLED=0` forces it
+off (shell env overrides the TOML, and pre-selects the wizard's No). The flag is read by the proxy
+process, so it applies to every shimmed agent and to the web UI's model calls alike.
 
 ## Built-in registry source: `doppler-cli`
 

@@ -17,6 +17,7 @@ const DEFAULT_UPSTREAM_ORIGINS = new Set(Object.values(DEFAULT_UPSTREAMS).map((u
 const DEFAULT_LOG_MAX_BYTES = 256 * 1024;
 
 export interface Config {
+  host: string;
   port: number;
   upstreams: { anthropic: string; openai: string; chatgpt: string };
   forcedUpstream?: string;
@@ -31,6 +32,9 @@ export interface Config {
 
 export function loadConfig(): Config {
   return {
+    // Bind loopback by default. Overriding to a non-loopback host (0.0.0.0, a LAN IP) exposes the
+    // proxy — and the provider auth headers it forwards — to the network, so it is opt-in only.
+    host: process.env.FICTA_HOST ?? "127.0.0.1",
     port: Number(process.env.FICTA_PORT ?? 8787),
     upstreams: {
       anthropic: process.env.FICTA_ANTHROPIC_UPSTREAM ?? DEFAULT_UPSTREAMS.anthropic,

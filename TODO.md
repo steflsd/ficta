@@ -5,8 +5,12 @@ detection, monorepo migration, Turbo). Captured 2026-07-01. All 8 findings were 
 verified. The migration/Turbo/web changes surfaced no correctness issues; everything below is in
 the PII detector.
 
-**Quick wins #3–#6 fixed 2026-07-01** (verified: 126 tests green, Biome clean). Remaining:
-**#1, #2** (design pass) and **#7, #8** (optional).
+**Quick wins #3–#6 fixed 2026-07-01** (verified: 126 tests green, Biome clean).
+**#1, #2, #8 fixed 2026-07-01** in the request-scoped PII pass (verified: 132 tests green, Biome
+clean, tarball file list unchanged).
+**Pilot polish 2026-07-01** — PII default-on in `ficta setup`, `active` discovery status, and the
+symmetric restore-count log line (verified: 133 tests green, Biome clean). See "Pilot polish" below.
+Remaining: **automated loopback E2E** (needed), **#7** (optional).
 
 > Path note: the review referenced both `src/…` and `packages/ficta/src/…` because the diff
 > includes the migration rename. Current path is `packages/ficta/src/…`.
@@ -15,47 +19,67 @@ the PII detector.
 
 ## Open — matters before the gateway is real
 
-- [ ] **1. Detected PII accumulates in the process-lifetime vault forever.**
-  `packages/ficta/src/engine.ts` — `registerDetectedValues()` → `vault.register()`; Vault state in
-  `vault.ts` (`values`/`seen`/`toSur`/`toVal`).
-  - **What:** every distinct email/SSN/card a request contains is registered into the shared
-    `Vault` and never evicted.
-  - **Why it matters (shared gateway):** unbounded heap; each request re-scans the whole
-    accumulated set (`replaceKnown` loops all values) and re-sorts on each new value → latency
-    creep; **all prior clients' plaintext PII stays in memory** — a data-retention hazard.
-  - **Root cause:** the CLI-era engine assumes a fixed, small registry; per-request *detection*
-    breaks that assumption.
-  - **Direction:** make detected values **request-scoped** — build the value→surrogate map for the
-    request, use it for that response's restore, then discard — instead of registering into the
-    global vault. Ties into the per-tenant engine idea in `docs/pii-gateway-north-star.md`. Also
-    resolves the retention angle of #2.
-  - **For analysis:** how to scope restore state when redact (request) and restore (response) share
-    the same `server.ts` handler invocation; whether registered secrets and detected PII should live
-    in separate vault layers (permanent vs per-request).
-
-- [ ] **2. Numeric-JSON PII is detected but never redacted.**
-  `packages/ficta/src/engine.ts` — `redactBodyDetailed()` (detection on raw body string vs
-  `vault.redactBodyDetailed` which only rewrites JSON **string leaves**).
-  - **What:** `{"card": 4111111111111111}` (a number leaf) is matched on the raw text and
-    registered, but can't be replaced. Fail-closed **on** (default) → request **rejected**
-    (availability); **off** → card **forwards to the vendor**.
-  - **Scope:** chat payloads put pasted content in string leaves, so the common path is fine; this
-    is the numeric-primitive edge (same class exists for registered numeric secrets).
-  - **Direction:** run detection over the same string leaves that get redacted (detected ==
-    redactable), or document the numeric-primitive limitation explicitly.
+- [ ] **Automated loopback E2E (CI-safe, no key, no external call).** Fake upstream via
+  `FICTA_UPSTREAM` (pattern in `test/server.test.ts`): send a body with synthetic name/SSN → assert
+  the fake upstream received **tokens** (no PII on the wire) and that a token in its reply is
+  **restored** in the client-facing response. Should also assert the new `scope.restoredCount` /
+  `♻️` accounting. This is the CI proof that the redact→restore round-trip holds through the real
+  proxy handler, not just the engine unit path.
 
 ## Optional cleanup
 
 - [ ] **7. Redundant plugin-level `seen` dedup.** `packages/ficta/src/plugins/pii/index.ts`
   — recognizer and vault already dedup. Mildly defensible once a 2nd recognizer (Presidio) exists,
   so decide when wiring the async recognizer.
-- [ ] **8. Test-only async wrappers.** `packages/ficta/src/engine.ts` — `redactBody`/`redactText`
-  (non-detailed) are now only used by tests; the server uses the `*Detailed` variants. Remove +
-  update tests, or keep as public API.
 
 ---
 
-## Done (2026-07-01)
+## Done (2026-07-01) — pilot polish (post-review)
+
+Refinements on top of the request-scoped pass, from proving the feature end-to-end in the web UI:
+
+- [x] **PII defaults on after `ficta setup`.** The wizard prompt now defaults **yes** and names the
+  current recognizer (`setup.ts`): if you're standing up a PII gateway, detection shouldn't ship
+  idle. "best-effort MVP" is a caveat on the *recognizer's* coverage, not a reason to leave the
+  concept off. The No path stays for the shared-proxy/CLI case (the regex can tokenize an email in
+  agent code you didn't care about). Two defaults by design: an unconfigured proxy is still **off**
+  (`envDefaults FICTA_PII_ENABLED=0`); `FICTA_PII_ENABLED=0` remains an explicit force-off. Docs
+  reconciled (`docs/plugins.md`, `apps/web/README.md`).
+- [x] **Detector discovery reports `active`, not a misleading `(0 values)`.** Added a first-class
+  `active` plugin-discovery status (`plugins/types.ts`, → `✓` in `plugins/index.ts`); the `pii`
+  detector reports `active` with **no** `valueCount` when enabled, since a detector holds no
+  preloaded values — it matches each request at runtime. The old `! PII detector (0 values)` banner
+  read as idle/broken. Test: `pii.test.ts` "declares a config binding and reports its status".
+- [x] **Symmetric restore-count log line.** Responses now log `♻️ ficta #N — restored M value(s) in
+  response`, mirroring the egress `🔒 … kept N`. The vault view accumulates a `restored` Set across
+  buffered **and** streaming restore; `restoredCount` is surfaced on the `RequestScope` interface;
+  `server.ts` logs it inline for buffered bodies and via a `tapStreamFlush` pass-through for streamed
+  bodies (so the count is final — it prints after `← #N` for streams, honest timing). Guarded by
+  `restoredCount > 0 && !cfg.silent`, so zero-restore turns stay quiet. Test: `pii.test.ts` "counts
+  distinct values restored back into a request's response".
+
+## Done (2026-07-01) — request-scoped PII pass
+
+- [x] **1. Detected PII no longer accumulates in the process-lifetime vault.** The vault now has two
+  layers (`vault.ts`): a **permanent** layer (registered secrets, shared, unchanged) and an
+  **ephemeral per-request** layer (`ScopedVault`). `engine.beginRequest(scopeKey?)` (on the
+  `RedactionEngine` interface) opens a fresh scope; `server.ts` opens one per request and drops it at
+  handler end, so detected values are bounded and GC'd. Restore consults detected-then-permanent, and
+  the detected `toVal` is **private to the scope**, which closes the cross-client leak (client B's
+  restore can never hand back client A's PII — see the deterministic-HMAC surrogate). `scopeKey` is
+  the reserved seam for a future persistent/shared (session/org) vault; ignored today. Tests:
+  `scope.test.ts` (leak isolation, ephemerality, cross-turn consistency).
+- [x] **2. Numeric-JSON PII no longer trips the fail-closed gate.** Detection runs over
+  `redactableBodyText(body)` — the JSON **string leaves** (values + object keys) that redaction can
+  actually rewrite — so "detected == redactable". `{"card": 4111…}` (a number leaf) is neither
+  detected nor flagged as a leak, so the request forwards unchanged instead of being rejected. The
+  numeric-primitive limitation is documented at `redactableBodyText` (a string surrogate cannot
+  replace a JSON number without changing the leaf's type); registered numeric secrets are unaffected
+  (they enter the permanent vault directly and the leak backstop still scans primitives). Tests:
+  `scope.test.ts` "detection matches the redactable surface".
+- [x] **8. Test-only async wrappers removed.** `ProtectionEngine.redactBody`/`redactText`
+  (non-detailed) are gone; the engine exposes only the `*Detailed` variants (used by the server and
+  now the tests). `engine.test.ts` updated to call `redactBodyDetailed`.
 
 - [x] **3. `engine.enabled` always true → false "🔒 redacting" banner during passthrough.**
   Added `ProtectionEngine.protecting` (also on the `RedactionEngine` interface): true only for
@@ -75,6 +99,8 @@ the PII detector.
   ships in this change; comment now points at `pii/index.ts`.
 
 ## Suggested next sequencing
-1. **#1 request-scoped detection** — the real design decision (also dissolves #2's retention angle);
-   revisit #2 numeric handling and #7 dedup while in there.
-2. **#8** optional cleanup.
+1. **Automated loopback E2E** — the CI-safe round-trip proof (see Open). Do this before the live run
+   so the wiring is verified without a key or an external call.
+2. **Live E2E** — the outward-facing single-user pilot run with a real key (see plan); sends fake
+   content to a real vendor, so it's a deliberate separate step.
+3. **#7** optional dedup cleanup — decide when wiring the async (Presidio) recognizer.

@@ -15,7 +15,7 @@ import {
   registryPolicyLines,
 } from "./plugins/index.js";
 import { ProtectionStats, type ProtectionStatsSnapshot, type ProtectionSurface } from "./protection-stats.js";
-import type { ProtectionHit, RedactionEngine } from "./redaction-engine.js";
+import type { ProtectionHit, RedactionEngine, RequestScope } from "./redaction-engine.js";
 import { surrogateKeyWarning } from "./vault.js";
 import { type Wire, wireOf } from "./wire.js";
 
@@ -33,7 +33,9 @@ export interface ProxyHandle {
 }
 
 /** Start the redaction proxy. Returns the bound port + a handle to close it. */
-export async function startProxy(opts: { port?: number; plugins?: readonly FictaPlugin[] } = {}): Promise<ProxyHandle> {
+export async function startProxy(
+  opts: { host?: string; port?: number; plugins?: readonly FictaPlugin[] } = {},
+): Promise<ProxyHandle> {
   const cfg = loadConfig();
   const engine: RedactionEngine = new ProtectionEngine({ plugins: opts.plugins });
   const stats = new ProtectionStats(runDir);
@@ -50,13 +52,20 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     const method = c.req.method;
     const wire = wireOf(url.pathname);
 
+    // One ephemeral scope for this request: registered secrets (the permanent layer) are shared, but
+    // any PII detected while redacting this request lives only in this scope and is consulted only
+    // for this request's restore. The scope is dropped when the handler returns, so detected values
+    // are bounded and can never be restored into another request's response. `scopeKeyFrom` is the
+    // seam for a future session/org-keyed persistent vault; it returns undefined today.
+    const scope = engine.beginRequest(scopeKeyFrom(c));
+
     let searchToSend = url.search;
     let queryRedaction: SurfaceRedaction | undefined;
     if (protect && searchToSend) {
-      const { search: redactedSearch, ...redaction } = await redactQueryString(engine, url);
+      const { search: redactedSearch, ...redaction } = await redactQueryString(scope, url);
       queryRedaction = redaction;
       if (redaction.leaks > 0 && cfg.failClosed) {
-        recordProtection(stats, engine, {
+        recordProtection(stats, scope, {
           method,
           path: url.pathname,
           wire,
@@ -73,7 +82,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     const upstreamIssue = upstreamPolicyIssue(cfg, target);
     if (upstreamIssue) {
       if (queryRedaction) {
-        recordProtection(stats, engine, {
+        recordProtection(stats, scope, {
           method,
           path: url.pathname,
           wire,
@@ -101,11 +110,11 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
       n = logRequest({ method, path: url.pathname, body: bodyText, target, route });
 
       if (protect) {
-        const redaction = await engine.redactBodyDetailed(bodyText, { path: url.pathname });
+        const redaction = await scope.redactBodyDetailed(bodyText, { path: url.pathname });
         const redacted = redaction.body;
-        requestModel = safeRequestModel(engine, originalModel, requestModelFromBody(redacted));
+        requestModel = safeRequestModel(scope, originalModel, requestModelFromBody(redacted));
         if (queryRedaction) {
-          recordProtection(stats, engine, {
+          recordProtection(stats, scope, {
             requestId: n,
             method,
             path: url.pathname,
@@ -118,7 +127,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
           });
         }
         if (redaction.leaks > 0 && cfg.failClosed) {
-          recordProtection(stats, engine, {
+          recordProtection(stats, scope, {
             requestId: n,
             method,
             path: url.pathname,
@@ -132,7 +141,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
           return blockedLeakResponse(c, cfg, "body", redaction.leaks, n);
         }
         if (redaction.count > 0 || redaction.leaks > 0) {
-          recordProtection(stats, engine, {
+          recordProtection(stats, scope, {
             requestId: n,
             method,
             path: url.pathname,
@@ -157,7 +166,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     } else {
       n = logRequest({ method, path: url.pathname, body: "", target, route });
       if (queryRedaction) {
-        recordProtection(stats, engine, {
+        recordProtection(stats, scope, {
           requestId: n,
           method,
           path: url.pathname,
@@ -171,9 +180,9 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     }
 
     if (protect) {
-      const redaction = await redactNonAuthHeaders(engine, headers);
+      const redaction = await redactNonAuthHeaders(scope, headers);
       if (redaction.leaks > 0 && cfg.failClosed) {
-        recordProtection(stats, engine, {
+        recordProtection(stats, scope, {
           requestId: n,
           method,
           path: url.pathname,
@@ -187,7 +196,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
         return blockedLeakResponse(c, cfg, "headers", redaction.leaks, n);
       }
       if (redaction.count > 0 || redaction.leaks > 0) {
-        recordProtection(stats, engine, {
+        recordProtection(stats, scope, {
           requestId: n,
           method,
           path: url.pathname,
@@ -228,6 +237,17 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     const treatAsEventStream = isEventStreamContentType(contentType) || (contentType === "" && wire !== "unknown");
     const restoreResponse = protect && (isRestorableContentType(contentType) || treatAsEventStream);
 
+    // Symmetric with the `🔒 … kept N` egress line: report how many distinct values were restored
+    // back into this response. Restore is a streaming rewrite, so for streamed bodies this fires from
+    // the tap's flush once the stream closes (i.e. after the `← #N` line); for buffered bodies it
+    // fires inline the moment restore has run. Zero restores (the common case) stay quiet.
+    const logRestore = () => {
+      const restored = scope.restoredCount;
+      if (restored > 0 && !cfg.silent) {
+        console.log(`♻️ ficta #${n} — restored ${restored} value(s) in response`);
+      }
+    };
+
     if (upstreamRes.body) {
       const [toClient, toLog] = upstreamRes.body.tee();
       void logResponse({ n, path: url.pathname, status: upstreamRes.status, contentType, stream: toLog });
@@ -239,21 +259,26 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
         // uses the NOOP adapter, which still restores whole surrogates in each event JSON-safely
         // (see Vault.restoreSseRecord). Cross-event reassembly needs a known wire schema, so it is
         // intentionally not attempted here.
-        return new Response(toClient.pipeThrough(engine.restoreEventStream(wire)), {
-          status: upstreamRes.status,
-          headers: resHeaders,
-        });
+        return new Response(
+          toClient.pipeThrough(scope.restoreEventStream(wire)).pipeThrough(tapStreamFlush(logRestore)),
+          {
+            status: upstreamRes.status,
+            headers: resHeaders,
+          },
+        );
       }
       if (isJsonContentType(contentType)) {
         // Buffer + JSON-aware restore so a restored value with JSON-special chars stays escaped.
         // Non-streaming JSON bodies are bounded, so giving up streaming here costs nothing.
         const text = await new Response(toClient).text();
-        return new Response(restoreBufferedBody(engine, contentType, text), {
+        const restored = restoreBufferedBody(scope, contentType, text);
+        logRestore();
+        return new Response(restored, {
           status: upstreamRes.status,
           headers: resHeaders,
         });
       }
-      return new Response(toClient.pipeThrough(engine.restoreStream()), {
+      return new Response(toClient.pipeThrough(scope.restoreStream()).pipeThrough(tapStreamFlush(logRestore)), {
         status: upstreamRes.status,
         headers: resHeaders,
       });
@@ -261,16 +286,22 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
 
     const body = await upstreamRes.text();
     void logResponse({ n, path: url.pathname, status: upstreamRes.status, contentType, body });
-    const restoredBody = restoreResponse ? restoreBufferedBody(engine, contentType, body) : body;
+    const restoredBody = restoreResponse ? restoreBufferedBody(scope, contentType, body) : body;
+    if (restoreResponse) logRestore();
     return new Response(restoredBody, { status: upstreamRes.status, headers: resHeaders });
   });
 
+  const bindHost = opts.host ?? cfg.host;
+  // Clients dial in over loopback even when we bind a wildcard host, so the copy-paste instructions
+  // should say 127.0.0.1, not 0.0.0.0/::. Only substitute for wildcard binds; a specific LAN IP is
+  // the address a client would actually use.
+  const clientHost = bindHost === "0.0.0.0" || bindHost === "::" ? "127.0.0.1" : bindHost;
   return new Promise<ProxyHandle>((resolve) => {
-    const server = serve({ fetch: app.fetch, port: opts.port ?? cfg.port, hostname: "127.0.0.1" }, (info) => {
+    const server = serve({ fetch: app.fetch, port: opts.port ?? cfg.port, hostname: bindHost }, (info) => {
       if (!cfg.silent) {
         const keyWarning = surrogateKeyWarning();
         console.log(`\n  ficta — protection proxy`);
-        console.log(`  listening      http://127.0.0.1:${info.port}`);
+        console.log(`  listening      http://${bindHost}:${info.port}`);
         console.log(`  anthropic ⇒    ${cfg.upstreams.anthropic}`);
         console.log(`  openai    ⇒    ${cfg.upstreams.openai}`);
         console.log(`  chatgpt   ⇒    ${cfg.upstreams.chatgpt}  (Codex OAuth)`);
@@ -294,7 +325,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
         console.log(`  fail-closed    ${cfg.failClosed ? "on" : "OFF (fail-open)"}`);
         console.log(`  run logs       ${runDir}${cfg.logBodies ? "  ⚠ raw bodies on" : ""}\n`);
         console.log(`  point a client at it:`);
-        console.log(`    ANTHROPIC_BASE_URL=http://127.0.0.1:${info.port} claude`);
+        console.log(`    ANTHROPIC_BASE_URL=http://${clientHost}:${info.port} claude`);
         console.log(`    (or use the wrapper:  ficta claude  /  ficta codex  /  ficta pi)\n`);
       }
       resolve({
@@ -307,10 +338,26 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
         keptCount: () => stats.snapshot().totals.keptOutOfModelValues,
         protectionStats: () => stats.snapshot(),
         statsSummary: () => stats.renderSummary(),
-        close: () => server.close(),
+        close: () => {
+          server.close();
+          // server.close() stops accepting new connections but leaves idle keep-alive
+          // sockets open, which keeps the event loop alive and stalls shutdown. Drop them
+          // so the process can exit promptly instead of being force-killed.
+          (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+        },
       });
     });
   });
+}
+
+/**
+ * The scope-key seam. Today every request gets an isolated in-memory ephemeral scope, so this
+ * returns `undefined` (no shared/persistent vault). It is the single place a future session- or
+ * org-derived key (from auth, a header, or a cookie) would be extracted to select a persistent,
+ * shared vault — without touching the request path. Intentionally ignores `c` for now.
+ */
+function scopeKeyFrom(_c: Context): string | undefined {
+  return undefined;
 }
 
 const HEALTH_PATH = "/__ficta/health";
@@ -346,8 +393,22 @@ function isJsonContentType(contentType: string): boolean {
 }
 
 /** Restore a fully-buffered body by content type: JSON-aware where possible, raw text otherwise. */
-function restoreBufferedBody(engine: RedactionEngine, contentType: string, body: string): string {
-  return isJsonContentType(contentType) ? engine.restoreJson(body) : engine.restoreText(body);
+function restoreBufferedBody(scope: RequestScope, contentType: string, body: string): string {
+  return isJsonContentType(contentType) ? scope.restoreJson(body) : scope.restoreText(body);
+}
+
+/**
+ * A pass-through stream whose `flush` runs once the upstream (restore) transform has fully drained.
+ * Appended after a streaming restore so the final restored-value count can be logged: the count is
+ * only settled when the stream closes, which is after the restore transform's own flush has emitted
+ * its last rewritten chunk.
+ */
+function tapStreamFlush(onFlush: () => void): TransformStream<Uint8Array, Uint8Array> {
+  return new TransformStream({
+    flush() {
+      onFlush();
+    },
+  });
 }
 
 /**
@@ -357,7 +418,7 @@ function restoreBufferedBody(engine: RedactionEngine, contentType: string, body:
  * every other parameter's wire bytes verbatim — re-encoding the whole query would normalize the
  * encoding of untouched, possibly signature-sensitive parameters.
  */
-async function redactQueryString(engine: RedactionEngine, url: URL): Promise<QueryRedaction> {
+async function redactQueryString(scope: RequestScope, url: URL): Promise<QueryRedaction> {
   const raw = url.search.startsWith("?") ? url.search.slice(1) : url.search;
   if (!raw) return { search: url.search, count: 0, leaks: 0, hits: [], leakHits: [] };
 
@@ -370,7 +431,7 @@ async function redactQueryString(engine: RedactionEngine, url: URL): Promise<Que
     const rawKey = eq === -1 ? segment : segment.slice(0, eq);
     const rawValue = eq === -1 ? undefined : segment.slice(eq + 1);
 
-    const redactedKey = await engine.redactTextDetailed(decodeQueryComponent(rawKey), { path: url.pathname });
+    const redactedKey = await scope.redactTextDetailed(decodeQueryComponent(rawKey), { path: url.pathname });
     addRedaction(total, redactedKey);
     const outKey = redactedKey.count > 0 ? encodeURIComponent(redactedKey.text) : rawKey;
 
@@ -379,7 +440,7 @@ async function redactQueryString(engine: RedactionEngine, url: URL): Promise<Que
       continue;
     }
 
-    const redactedValue = await engine.redactTextDetailed(decodeQueryComponent(rawValue), { path: url.pathname });
+    const redactedValue = await scope.redactTextDetailed(decodeQueryComponent(rawValue), { path: url.pathname });
     addRedaction(total, redactedValue);
     const outValue = redactedValue.count > 0 ? encodeURIComponent(redactedValue.text) : rawValue;
 
@@ -420,11 +481,11 @@ function contentTypeBase(contentType: string): string {
   return contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
 }
 
-async function redactNonAuthHeaders(engine: RedactionEngine, headers: Headers): Promise<SurfaceRedaction> {
+async function redactNonAuthHeaders(scope: RequestScope, headers: Headers): Promise<SurfaceRedaction> {
   const total = emptyRedaction();
   for (const [name, value] of [...headers]) {
     if (REQUIRED_AUTH_HEADER_NAMES.has(name.toLowerCase())) continue;
-    const redacted = await engine.redactTextDetailed(value, { header: name, surface: "header" });
+    const redacted = await scope.redactTextDetailed(value, { header: name, surface: "header" });
     if (redacted.count > 0) headers.set(name, redacted.text);
     addRedaction(total, redacted);
   }
@@ -447,7 +508,7 @@ function addRedaction(
 
 function recordProtection(
   stats: ProtectionStats,
-  engine: RedactionEngine,
+  scope: RequestScope,
   args: {
     requestId?: number;
     method: string;
@@ -463,7 +524,7 @@ function recordProtection(
   stats.record({
     requestId: args.requestId,
     method: args.method,
-    path: safeStatsMetadata(engine, args.path, "<redacted-path>"),
+    path: safeStatsMetadata(scope, args.path, "<redacted-path>"),
     wire: args.wire,
     route: args.route,
     model: args.model,
@@ -488,19 +549,19 @@ function requestModelFromBody(body: string): string | undefined {
   return undefined;
 }
 
-function safeRequestModel(engine: RedactionEngine, original: string | undefined, redacted: string | undefined): string {
+function safeRequestModel(scope: RequestScope, original: string | undefined, redacted: string | undefined): string {
   const candidate = redacted ?? original;
   if (!candidate) return "unknown";
-  if (original && engine.containsProtectedValue(original)) return "<redacted>";
+  if (original && scope.containsProtectedValue(original)) return "<redacted>";
   if (redacted && SURROGATE_RE.test(redacted)) return "<redacted>";
   if (original && redacted && original !== redacted) return "<redacted>";
   return candidate;
 }
 
-function safeStatsMetadata(engine: RedactionEngine, value: string | undefined, fallback: string): string {
+function safeStatsMetadata(scope: RequestScope, value: string | undefined, fallback: string): string {
   const text = value?.trim();
   if (!text) return fallback;
-  return engine.containsProtectedValue(text) || SURROGATE_RE.test(text) ? fallback : text;
+  return scope.containsProtectedValue(text) || SURROGATE_RE.test(text) ? fallback : text;
 }
 
 // Run directly (`tsx src/server.ts`, `pnpm dev`) → start with the banner.
@@ -511,4 +572,17 @@ const isMain = (() => {
     return false;
   }
 })();
-if (isMain) void startProxy();
+if (isMain) {
+  const handle = await startProxy();
+  // Run directly (pnpm dev / node --watch), the proxy IS the process — nothing else drives
+  // shutdown. Without these handlers the listening socket keeps the event loop alive, so the
+  // process ignores SIGINT/SIGTERM and a supervisor (node --watch, turbo) has to force-kill it.
+  // Close the server and exit so Ctrl+C, `turbo run dev` teardown, and watch restarts all
+  // shut down cleanly.
+  const shutdown = () => {
+    handle.close();
+    process.exit(0);
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}

@@ -67,10 +67,11 @@ function discoverPii(): PluginDiscovery {
     id: `${PLUGIN_NAME}/detector`,
     plugin: PLUGIN_NAME,
     label: "PII detector",
-    status: enabled ? "available" : "disabled",
-    valueCount: 0,
+    // A detector holds no pre-loaded values — it matches each request at runtime — so report `active`
+    // with no valueCount rather than a misleading "(0 values)" that reads as idle.
+    status: enabled ? "active" : "disabled",
     message: enabled
-      ? `best-effort structured PII (${recognizers.map((r) => r.name).join(", ")}); tokenized on egress, restored on responses`
+      ? `active — matches each request; best-effort structured PII (${recognizers.map((r) => r.name).join(", ")}), tokenized on egress and restored on responses`
       : `disabled — set ${ENV_ENABLED}=1 (pii.enabled=true) to redact emails, SSNs, and card numbers`,
   };
 }

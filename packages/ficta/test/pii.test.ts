@@ -63,6 +63,25 @@ describe("pii detector plugin", () => {
     expect(engine.restoreText(redacted.body)).toContain(EMAIL);
   });
 
+  it("counts distinct values restored back into a request's response", async () => {
+    process.env[ENV] = "1";
+    const engine = new ProtectionEngine({ plugins: [piiPlugin] });
+    const scope = engine.beginRequest();
+    const body = JSON.stringify({ content: `emails ${EMAIL} and ${SSN}` });
+
+    const redacted = await scope.redactBodyDetailed(body);
+    expect(redacted.count).toBe(2);
+    expect(scope.restoredCount).toBe(0); // nothing restored yet — only egress redaction happened
+
+    // Simulate the response echoing both surrogates back; restore should tally each distinct value.
+    scope.restoreJson(redacted.body);
+    expect(scope.restoredCount).toBe(2);
+
+    // Restoring the same surrogates again does not double-count (Set of raw values).
+    scope.restoreText(redacted.body);
+    expect(scope.restoredCount).toBe(2);
+  });
+
   it("reports `protecting` only when actually active, not merely present", () => {
     delete process.env[ENV];
     const off = new ProtectionEngine({ plugins: [piiPlugin] });
@@ -80,6 +99,9 @@ describe("pii detector plugin", () => {
     process.env[ENV] = "0";
     expect(piiPlugin.discover?.()[0]?.status).toBe("disabled");
     process.env[ENV] = "1";
-    expect(piiPlugin.discover?.()[0]?.status).toBe("available");
+    // On detector reports `active` (matches per request) with no value count, not `available`/(0 values).
+    const active = piiPlugin.discover?.()[0];
+    expect(active?.status).toBe("active");
+    expect(active?.valueCount).toBeUndefined();
   });
 });

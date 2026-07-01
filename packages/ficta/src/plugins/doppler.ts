@@ -206,21 +206,17 @@ function dopplerSetupSource(env: NodeJS.ProcessEnv): RegistrySetupSource {
       const mode = await ctx.promptSelect<DopplerSetupConfigMode>(
         "Default Doppler coverage for each ficta launch",
         [
-          { value: "current", label: "active config resolved by Doppler for the current directory" },
           { value: "all", label: "all configs in the resolved Doppler project" },
+          { value: "current", label: "active config resolved by Doppler for the current directory" },
         ],
         configModeDefault(ctx.env.FICTA_REGISTRY_DOPPLER_CONFIGS),
-      );
-      const project = await ctx.promptText(
-        "Doppler project override (advanced, global; optional)",
-        ctx.env.FICTA_REGISTRY_DOPPLER_PROJECT ?? "",
-        "Leave blank to let Doppler resolve the active project for each launch directory.",
-        true,
       );
       return {
         FICTA_REGISTRY_DOPPLER_ENABLED: "1",
         FICTA_REGISTRY_DOPPLER_CONFIGS: mode,
-        FICTA_REGISTRY_DOPPLER_PROJECT: project,
+        // Doppler resolves the project from the repo (.doppler.yaml / CLI config);
+        // preserve any advanced env/config override but don't prompt for it.
+        FICTA_REGISTRY_DOPPLER_PROJECT: ctx.env.FICTA_REGISTRY_DOPPLER_PROJECT ?? "",
       };
     },
     disabledValues(ctx) {
@@ -426,7 +422,7 @@ function emptyStats(): DopplerStats {
 }
 
 function configModeDefault(value: string | undefined): DopplerSetupConfigMode {
-  return value === "all" ? "all" : "current";
+  return value === "current" ? "current" : "all";
 }
 
 function commandError(

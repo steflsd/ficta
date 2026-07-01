@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
@@ -13,10 +15,16 @@ export default defineConfig(({ mode }) => {
 
   return {
     server: { port: 3000 },
+    resolve: {
+      // `@` → src, so shadcn/ui-generated imports (`@/components/...`, `@/lib/utils`) resolve.
+      alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    },
     plugins: [
       tanstackStart(),
       // React's Vite plugin must come after TanStack Start's plugin.
       viteReact(),
+      // Tailwind v4 scans classes and emits CSS; runs last.
+      tailwindcss(),
     ],
   };
 });

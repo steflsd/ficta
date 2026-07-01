@@ -22,7 +22,7 @@ describe("protection engine plugins", () => {
     expect(engine.registrySize).toBe(1);
     expect(engine.enabled).toBe(true);
 
-    const redacted = await engine.redactBody(JSON.stringify({ content: `secret=${SECRET}` }));
+    const redacted = await engine.redactBodyDetailed(JSON.stringify({ content: `secret=${SECRET}` }));
     expect(redacted.count).toBe(1);
     expect(redacted.leaks).toBe(0);
     expect(redacted.body).not.toContain(SECRET);
@@ -43,10 +43,12 @@ describe("protection engine plugins", () => {
       ],
     });
 
-    expect(await engine.redactBody(JSON.stringify({ content: SECRET }))).toEqual({
+    expect(await engine.redactBodyDetailed(JSON.stringify({ content: SECRET }))).toEqual({
       body: JSON.stringify({ content: SECRET }),
       count: 0,
       leaks: 0,
+      hits: [],
+      leakHits: [],
     });
   });
 
@@ -70,7 +72,7 @@ describe("protection engine plugins", () => {
     expect(engine.registrySize).toBe(0);
     expect(engine.enabled).toBe(true);
 
-    const redacted = await engine.redactBody(JSON.stringify({ content: `contact ${EMAIL}` }));
+    const redacted = await engine.redactBodyDetailed(JSON.stringify({ content: `contact ${EMAIL}` }));
     expect(redacted.count).toBe(1);
     expect(redacted.leaks).toBe(0);
     expect(redacted.body).not.toContain(EMAIL);
@@ -148,7 +150,7 @@ describe("protection engine plugins", () => {
       const body = JSON.stringify({
         content: "detector-routing-label / real-secret-value-abc / opts-routing-label / kept-secret-value-xyz",
       });
-      const redacted = await engine.redactBody(body);
+      const redacted = await engine.redactBodyDetailed(body);
 
       expect(redacted.leaks).toBe(0);
       // Excluded names (from both detector and opts.values) are left intact.

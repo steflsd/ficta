@@ -106,7 +106,13 @@ export interface DetectTextContext {
   header?: string;
 }
 
-export type PluginDiscoveryStatus = "loaded" | "available" | "disabled" | "not_found" | "error";
+/**
+ * `loaded` — a registry *source* that pulled in N exact values up front (count is meaningful).
+ * `active` — a *detector* that is on but pre-loads nothing; it matches each request at runtime, so it
+ *   reports no value count. Distinct from `available` so an on detector reads as ✓, not a `!` warning.
+ * `available` — could act but has not loaded (mildly notable for a source). `disabled`/`not_found`/`error`.
+ */
+export type PluginDiscoveryStatus = "loaded" | "active" | "available" | "disabled" | "not_found" | "error";
 
 /**
  * Safe launch-time discovery metadata. This is what the CLI/banner may print.

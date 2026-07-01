@@ -26,24 +26,27 @@ export function surrogateKeyWarning(): string | undefined {
   return undefined;
 }
 
-export class Vault {
-  private readonly values: string[] = []; // known values, longest first
+/**
+ * A mutable surrogate store: the deterministic value↔surrogate dictionary plus the longest-first
+ * value list used for redaction. One store per protection *layer* — the permanent registry
+ * (registered secrets, process-lifetime) and each request's ephemeral detected-PII layer are
+ * separate stores that share a single {@link SurrogateStrategy}, so the same raw value mints the
+ * same surrogate in either layer (deterministic HMAC → cross-turn/cross-layer consistency).
+ */
+export class SurrogateTable {
+  readonly values: string[] = []; // known values, longest first
   private readonly seen = new Set<string>();
-  private readonly toSur = new Map<string, string>();
-  private readonly toVal = new Map<string, string>();
-  private readonly surrogate: SurrogateStrategy;
+  readonly toSur = new Map<string, string>();
+  readonly toVal = new Map<string, string>();
 
-  constructor(values: ReadonlyArray<VaultValue> = [], surrogate: SurrogateStrategy = hexSurrogateStrategy()) {
-    this.surrogate = surrogate;
-    this.register(values);
-  }
+  constructor(readonly surrogate: SurrogateStrategy) {}
 
   get size(): number {
     return this.values.length;
   }
 
   /**
-   * Register additional values, e.g. from request-time detector plugins. The vault is name-blind, so
+   * Register additional values, e.g. from request-time detector plugins. The store is name-blind, so
    * it cannot apply registry-policy exclusions itself: that enforcement happens upstream where names
    * are still known — `loadPluginRegistry` for launch values and `ProtectionEngine.admit()` for
    * detector/caller-supplied values. Any new code path that registers named candidates must filter
@@ -64,6 +67,77 @@ export class Vault {
     if (added > 0) this.values.sort((a, b) => b.length - a.length);
     return added;
   }
+}
+
+/**
+ * Read/redact/restore mechanics over one or more {@link SurrogateTable} layers, consulted in
+ * precedence order (first match wins). A permanent {@link Vault} is a view over a single table; a
+ * per-request {@link ScopedVault} is a view over `[detected, permanent]`. All the security-critical
+ * mechanics (exact replacement, fail-closed leak scanning, streaming restore) live here exactly
+ * once, so the CLI single-vault path and the request-scoped gateway path share the same tested code.
+ */
+export abstract class VaultView {
+  /**
+   * Distinct raw values this view has restored back into responses. Populated by `restoreText` /
+   * `restoreJsonText`, so it spans buffered and streaming restore alike; the proxy reads its size
+   * after a response drains to log the symmetric `♻️ restored N value(s)` line. A scope restores only
+   * on its one response, so for a request scope this equals that response's restore count.
+   */
+  readonly restored = new Set<string>();
+
+  protected constructor(private readonly layers: readonly [SurrogateTable, ...SurrogateTable[]]) {}
+
+  /** How many distinct values this view has restored into responses so far. */
+  get restoredCount(): number {
+    return this.restored.size;
+  }
+
+  /** Shared across all layers (a single injected strategy), so any layer's is the strategy. */
+  protected get surrogate(): SurrogateStrategy {
+    return this.layers[0].surrogate;
+  }
+
+  /** Any layer holds a value to redact. */
+  private get hasValues(): boolean {
+    return this.layers.some((layer) => layer.size > 0);
+  }
+
+  /** Any layer holds a surrogate to restore. */
+  private get hasSurrogates(): boolean {
+    return this.layers.some((layer) => layer.toVal.size > 0);
+  }
+
+  /** Known raw values across all layers, longest first (a longer value redacts before a substring). */
+  private orderedValues(): readonly string[] {
+    if (this.layers.length === 1) return this.layers[0].values; // already sorted, no merge needed
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const layer of this.layers) {
+      for (const value of layer.values) {
+        if (seen.has(value)) continue;
+        seen.add(value);
+        out.push(value);
+      }
+    }
+    out.sort((a, b) => b.length - a.length);
+    return out;
+  }
+
+  private surrogateFor(value: string): string | undefined {
+    for (const layer of this.layers) {
+      const sur = layer.toSur.get(value);
+      if (sur !== undefined) return sur;
+    }
+    return undefined;
+  }
+
+  private valueFor(surrogate: string): string | undefined {
+    for (const layer of this.layers) {
+      const value = layer.toVal.get(surrogate);
+      if (value !== undefined) return value;
+    }
+    return undefined;
+  }
 
   /** Redact known values in a raw string. */
   redactText(text: string): { text: string; count: number } {
@@ -73,7 +147,7 @@ export class Vault {
 
   /** Redact known values in a raw string and report which raw values matched. */
   redactTextDetailed(text: string): { text: string; count: number; values: string[] } {
-    if (this.size === 0 || !text) return { text, count: 0, values: [] };
+    if (!this.hasValues || !text) return { text, count: 0, values: [] };
     const found = new Set<string>();
     return { text: this.replaceKnown(text, found), count: found.size, values: [...found] };
   }
@@ -90,7 +164,7 @@ export class Vault {
 
   /** Redact a request body and report which raw values matched. */
   redactBodyDetailed(body: string): { body: string; count: number; values: string[] } {
-    if (this.size === 0 || !body) return { body, count: 0, values: [] };
+    if (!this.hasValues || !body) return { body, count: 0, values: [] };
     const found = new Set<string>();
     const replace = (s: string): string => this.replaceKnown(s, found);
     try {
@@ -103,9 +177,9 @@ export class Vault {
 
   private replaceKnown(text: string, found: Set<string>): string {
     let out = text;
-    for (const v of this.values) {
+    for (const v of this.orderedValues()) {
       if (!out.includes(v)) continue;
-      const surrogate = this.toSur.get(v);
+      const surrogate = this.surrogateFor(v);
       if (surrogate === undefined) continue;
       const replaced = replaceKnownOutsidePaths(out, v, surrogate);
       if (replaced.count === 0) continue;
@@ -117,8 +191,13 @@ export class Vault {
 
   /** Restore surrogates → real values in a chunk of text. */
   restoreText(text: string): string {
-    if (this.toVal.size === 0 || !text) return text;
-    return text.replace(this.surrogate.pattern, (m) => this.toVal.get(m) ?? m);
+    if (!this.hasSurrogates || !text) return text;
+    return text.replace(this.surrogate.pattern, (m) => {
+      const value = this.valueFor(m);
+      if (value === undefined) return m;
+      this.restored.add(value);
+      return value;
+    });
   }
 
   /**
@@ -131,7 +210,7 @@ export class Vault {
    * text restore for bodies that are not valid JSON.
    */
   restoreJson(body: string): string {
-    if (this.toVal.size === 0 || !body) return body;
+    if (!this.hasSurrogates || !body) return body;
     try {
       JSON.parse(body);
     } catch {
@@ -142,10 +221,12 @@ export class Vault {
 
   /** In-place surrogate restore for JSON text, escaping each value for its string context. */
   restoreJsonText(text: string): string {
-    if (this.toVal.size === 0 || !text) return text;
+    if (!this.hasSurrogates || !text) return text;
     return text.replace(this.surrogate.pattern, (m) => {
-      const value = this.toVal.get(m);
-      return value === undefined ? m : jsonStringEscape(value);
+      const value = this.valueFor(m);
+      if (value === undefined) return m;
+      this.restored.add(value);
+      return jsonStringEscape(value);
     });
   }
 
@@ -161,7 +242,7 @@ export class Vault {
 
   /** Raw registered/detected values that still survive in already-redacted outbound text/body. */
   leakValues(body: string): string[] {
-    if (this.size === 0 || !body) return [];
+    if (!this.hasValues || !body) return [];
     const strings: string[] = [];
     let masked: string | undefined;
     try {
@@ -171,7 +252,7 @@ export class Vault {
       // Non-JSON: the whole raw body is scanned for any known value below.
     }
     const leaked: string[] = [];
-    for (const v of this.values) {
+    for (const v of this.orderedValues()) {
       const stringLeak = strings.some((s) => containsKnownOutsidePaths(s, v));
       // For valid JSON, string contents are masked out, so the backstop scans only primitives and
       // matches a value as a complete token — never as a substring of a longer number (so a
@@ -222,6 +303,70 @@ export class Vault {
       adapter,
       this.surrogate,
     );
+  }
+}
+
+/**
+ * The permanent vault: registered/launch-time values (registered secrets), loaded once and shared
+ * across every request. Behaviour is identical to the pre-scope single vault — this is what keeps
+ * the CLI paradigm (protect codex/pi/claude from leaking registered secrets) working unchanged.
+ * Request-time detected PII must NOT be registered here; open a {@link ScopedVault} via
+ * {@link beginScope} so detected values live and die with a single request.
+ */
+export class Vault extends VaultView {
+  private readonly permanent: SurrogateTable;
+
+  constructor(values: ReadonlyArray<VaultValue> = [], surrogate: SurrogateStrategy = hexSurrogateStrategy()) {
+    const permanent = new SurrogateTable(surrogate);
+    permanent.register(values);
+    super([permanent]);
+    this.permanent = permanent;
+  }
+
+  get size(): number {
+    return this.permanent.size;
+  }
+
+  /** Register additional permanent values (launch-time registry ingress only). See {@link SurrogateTable.register}. */
+  register(values: ReadonlyArray<VaultValue>): number {
+    return this.permanent.register(values);
+  }
+
+  /**
+   * Open a per-request scope: an ephemeral detected-PII layer stacked over this permanent vault,
+   * sharing its {@link SurrogateStrategy}. Detected values register into the scope only and are
+   * discarded when the scope is dropped, so they neither grow the permanent vault nor leak across
+   * requests. Restore/leak/redact in the scope consult detected-then-permanent.
+   */
+  beginScope(): ScopedVault {
+    return new ScopedVault(this.permanent);
+  }
+}
+
+/**
+ * A request-scoped vault: an ephemeral detected-value layer over the shared permanent vault. Created
+ * per request via {@link Vault.beginScope}; detection registers into the detected layer, and the
+ * whole scope (with its detected surrogates) is garbage-collected when the request handler returns.
+ * This bounds memory and — because the detected `toVal` is private to the scope — prevents one
+ * request's PII from being restored into another request's response.
+ */
+export class ScopedVault extends VaultView {
+  private readonly detected: SurrogateTable;
+
+  constructor(permanent: SurrogateTable) {
+    const detected = new SurrogateTable(permanent.surrogate); // shares the strategy → same surrogates
+    super([detected, permanent]);
+    this.detected = detected;
+  }
+
+  /** Register request-detected values into the ephemeral layer only (never the permanent vault). */
+  register(values: ReadonlyArray<VaultValue>): number {
+    return this.detected.register(values);
+  }
+
+  /** Count of ephemeral values detected in this request (the permanent layer is excluded). */
+  get detectedSize(): number {
+    return this.detected.size;
   }
 }
 
@@ -632,5 +777,26 @@ function collectStrings(value: unknown, out: string[]): void {
       out.push(k);
       collectStrings(v, out);
     }
+  }
+}
+
+/**
+ * The subset of a request body that JSON-aware redaction can actually rewrite: the string leaves
+ * (values + object keys) of a JSON document, joined by newlines, or the whole raw body when it is
+ * not JSON. Detection should run over THIS text, not the raw body, so that "detected == redactable":
+ * a value that appears only as a JSON *number* leaf (e.g. `{"card": 4111111111111111}`) is neither
+ * detected nor rewritten, so it never trips the fail-closed leak gate. Numeric-primitive PII is a
+ * documented limitation — a surrogate is a string and cannot replace a JSON number without changing
+ * the leaf's type. Registered numeric secrets are unaffected: they enter the permanent vault
+ * directly (not via detection) and the leak backstop still scans primitives for them.
+ */
+export function redactableBodyText(body: string): string {
+  if (!body) return body;
+  try {
+    const strings: string[] = [];
+    collectStrings(JSON.parse(body), strings);
+    return strings.join("\n");
+  } catch {
+    return body; // non-JSON: the entire body is redactable text
   }
 }

@@ -338,6 +338,8 @@ function statusIcon(status: PluginDiscoveryStatus): string {
   switch (status) {
     case "loaded":
       return "✓";
+    case "active":
+      return "✓";
     case "available":
       return "!";
     case "error":

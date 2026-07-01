@@ -48,7 +48,7 @@
     "access": "public"
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node --watch --import tsx src/server.ts",
     "start": "tsx src/server.ts",
     "ficta": "tsx src/cli.ts",
     "build": "tsc",

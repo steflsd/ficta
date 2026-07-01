@@ -21,26 +21,43 @@ browser (useChat)
 > against a live proxy + vendor.
 
 1. From the repo root: `pnpm install` (installs this app's deps too — it's a workspace member).
-2. **Provide your model API keys** in `apps/web/.env` (git-ignored, loaded server-side only — never
-   sent to the browser):
+2. **Provide config + model API keys.** Values are read server-side only (never sent to the browser)
+   and can come from Doppler *or* a `.env` file — see below. The server needs `OPENAI_API_KEY` and/or
+   `ANTHROPIC_API_KEY`; the proxy reads `FICTA_PROXY_URL` and `FICTA_PII_ENABLED`.
+
+   **Recommended — Doppler** (`process.env` is populated by `doppler run`). Put `OPENAI_API_KEY` /
+   `ANTHROPIC_API_KEY` — and, so no inline flags are needed, `FICTA_PROXY_URL` and `FICTA_PII_ENABLED`
+   — in your Doppler config, then run both the proxy and UI from the repo root:
+
+   ```sh
+   pnpm dev:doppler          # = doppler run -- pnpm dev:all
+   ```
+
+   **Fallback — `.env`** (no Doppler): copy the example and fill it in:
 
    ```sh
    cp apps/web/.env.example apps/web/.env
    # then edit apps/web/.env and set OPENAI_API_KEY and/or ANTHROPIC_API_KEY
-   ```
-
-3. Start **both** the proxy and the UI with one command from the repo root — turning on PII
-   redaction at the proxy (that flag is read by the proxy process, so pass it in the shell):
-
-   ```sh
-   FICTA_PII_ENABLED=1 pnpm dev:all
+   pnpm dev:all
    ```
 
    Then open http://localhost:3000. (`pnpm dev` alone is the proxy only; `pnpm web:dev` is the UI only.)
 
-**Where each value goes:** `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `FICTA_PROXY_URL` → `apps/web/.env`
-(the web server reads them). `FICTA_PII_ENABLED` → the **proxy** process (shell env, as above), since
-the proxy — not the UI — does the redaction.
+**Precedence:** `vite.config.ts` loads `apps/web/.env` only as a *fallback* — it sets a key only when
+`process.env` doesn't already have it. So Doppler-injected (or any shell-exported) values win, and
+`.env` fills whatever Doppler didn't set. You can mix the two.
+
+**PII redaction** is toggled by `FICTA_PII_ENABLED`, read by the **proxy** process (not the UI). Its
+durable home is the proxy's own config: `ficta setup` **defaults this to on** and persists `[pii]
+enabled = true` to `~/.ficta/config.toml` (see
+[`packages/ficta/docs/plugins.md`](../../packages/ficta/docs/plugins.md)). Note the two defaults — an
+*unconfigured* proxy is off, but running the wizard turns it on. For a one-off instead, pass it
+inline: `FICTA_PII_ENABLED=1 doppler run -- pnpm dev:all` (or `FICTA_PII_ENABLED=1 pnpm dev:all`
+without Doppler); `FICTA_PII_ENABLED=0` forces it off.
+
+> The ficta proxy also loads secrets to redact from the same Doppler context via its own Doppler
+> registry plugin (`packages/ficta/src/plugins/doppler.ts`), so running under `doppler run` feeds both
+> the web app's env and the proxy's redaction registry.
 
 ## Configuration (server-side only)
 

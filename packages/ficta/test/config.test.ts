@@ -7,6 +7,7 @@ import { configPath, readUserConfig, writeUserConfig } from "../src/user-config.
 
 const originalLogBodies = process.env.FICTA_LOG_BODIES;
 const originalConfigFile = process.env.FICTA_CONFIG_FILE;
+const originalHost = process.env.FICTA_HOST;
 
 afterEach(() => {
   if (originalLogBodies === undefined) delete process.env.FICTA_LOG_BODIES;
@@ -14,12 +15,24 @@ afterEach(() => {
 
   if (originalConfigFile === undefined) delete process.env.FICTA_CONFIG_FILE;
   else process.env.FICTA_CONFIG_FILE = originalConfigFile;
+
+  if (originalHost === undefined) delete process.env.FICTA_HOST;
+  else process.env.FICTA_HOST = originalHost;
 });
 
 describe("config hardening", () => {
   it("keeps raw body logging off by default", () => {
     delete process.env.FICTA_LOG_BODIES;
     expect(loadConfig().logBodies).toBe(false);
+  });
+
+  it("binds loopback by default and honours FICTA_HOST for an explicit override", () => {
+    delete process.env.FICTA_HOST;
+    expect(loadConfig().host).toBe("127.0.0.1");
+
+    // Exposing the proxy on the network is opt-in via FICTA_HOST (it forwards provider auth headers).
+    process.env.FICTA_HOST = "0.0.0.0";
+    expect(loadConfig().host).toBe("0.0.0.0");
   });
 
   it("requires explicit opt-in for raw body logging", () => {
