@@ -7,7 +7,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/steflsd/ficta.git"
+    "url": "git+https://github.com/steflsd/ficta.git",
+    "directory": "packages/ficta"
   },
   "bugs": {
     "url": "https://github.com/steflsd/ficta/issues"

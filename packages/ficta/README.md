@@ -1,3 +1,5 @@
+![ficta — a local secret airlock for coding agents](assets/ficta-overview.png)
+
 # @steflsd/ficta
 
 Local redaction proxy for coding agents. ficta sits between your agent and the model provider,
