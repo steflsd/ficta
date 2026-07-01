@@ -13,11 +13,14 @@ export interface RedactionEngine {
   /** True when the engine may transform outbound data (has registered values or detectors). */
   readonly enabled: boolean;
 
-  /** Redact a request body (JSON-aware) and report which values matched / leaked. */
-  redactBodyDetailed(body: string, ctx?: Omit<DetectTextContext, "surface">): BodyRedactionDetails;
+  /**
+   * Redact a request body (JSON-aware) and report which values matched / leaked. Async because
+   * detection may hit an out-of-process recognizer (e.g. a Presidio/NER sidecar).
+   */
+  redactBodyDetailed(body: string, ctx?: Omit<DetectTextContext, "surface">): Promise<BodyRedactionDetails>;
 
-  /** Redact a raw string (header value, query component) and report matches / leaks. */
-  redactTextDetailed(text: string, ctx?: TextRedactionContext): TextRedactionDetails;
+  /** Redact a raw string (header value, query component) and report matches / leaks. Async: see above. */
+  redactTextDetailed(text: string, ctx?: TextRedactionContext): Promise<TextRedactionDetails>;
 
   /** Restore surrogates → real values in a chunk of text. */
   restoreText(text: string): string;

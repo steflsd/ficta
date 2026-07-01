@@ -1,9 +1,28 @@
 # ficta PII redaction gateway + TanStack Start chat UI — north star
 
-> **Status:** design / planning (not yet implemented). North-star reference for a
-> future build. Nothing in this document has been coded; it captures decisions,
-> architecture, and the intended module layout so implementation is mechanical.
-> Last updated: 2026-07-01.
+> **Status:** in progress. The ficta-core backend for this gateway is partly built (see
+> **Progress** below); the `apps/web` TanStack Start UI and the Presidio recognizer are not
+> built yet. North-star reference — captures decisions, architecture, and the intended module
+> layout. Last updated: 2026-07-01.
+
+## Progress
+
+Built and verified (behind `pnpm verify`):
+- **Seam contracts** — `RedactionEngine` (`src/redaction-engine.ts`), `SurrogateStrategy`
+  (`src/surrogate.ts`, hex strategy injected into the vault), `PiiRecognizer`
+  (`src/plugins/pii/recognizer.ts`). `server.ts` depends on the `RedactionEngine` interface, not the
+  concrete engine.
+- **Detectors are first-class config-driven plugins** — `DetectorPlugin` now carries optional
+  `config`/`setup`/`discover` (`types.ts`); the config/setup/discovery plumbing in `plugins/index.ts`
+  gathers from any plugin kind (`loadValues` stays registry-source-only).
+- **PII detector MVP** — `piiPlugin` (`src/plugins/pii/index.ts`) composing a high-precision regex
+  recognizer (email, US SSN, credit-card+Luhn). Off by default via `FICTA_PII_ENABLED` ↔ `pii.enabled`;
+  in `defaultPlugins`; detected PII tokenized on egress and restored on responses.
+- **Detection path is async** — `detectText` may return a `Promise`; `engine.redactBodyDetailed` /
+  `redactTextDetailed` and `server.ts` await it. This is what lets an out-of-process recognizer plug in.
+
+Not built yet: the async **Presidio/NER recognizer**, `FICTA_HOST` + Docker, and the entire
+`apps/web` UI.
 
 ## Context
 
@@ -15,7 +34,7 @@ Goal: a **law firm** runs an internal chat assistant where lawyers paste full le
 - **Client:** a **custom chat UI built in TanStack Start**, in a **pnpm monorepo**. "Any model / bring-your-own-key" comes from **TanStack AI** (`@tanstack/ai`), not from adopting LibreChat/open-webui. Browser extension for real chatgpt.com/claude.ai is **documented as an alternative**, not built.
 
 **Why the pieces fit (verified against the current code):**
-- **Engine already does dynamic detect→tokenize→restore.** `redactBodyDetailed()` runs `registerDetectedValues()` before redacting (`engine.ts:100`), which calls each plugin's `detectText()` then `vault.register(admitted)` (`engine.ts:154-172`) — so values never seen before are tokenized on egress and restored on the response. `kind:"pii"`/`confidence:"probabilistic"` already exist (`types.ts:1-2`); a detector-only engine with an empty registry is still `enabled` (`engine.ts:91`).
+- **Engine does dynamic detect→tokenize→restore, now async.** `redactBodyDetailed()` awaits `registerDetectedValues()` before redacting, which awaits each plugin's `detectText()` (sync *or* async) then `vault.register(admitted)` — so values never seen before are tokenized on egress and restored on the response, and an out-of-process recognizer can be awaited on the request path. `kind:"pii"`/`confidence:"probabilistic"` exist in the types; a detector-only engine with an empty registry is still `enabled`.
 - **TanStack AI routes through ficta via a `baseURL` override.** `openaiCompatible({ baseURL, apiKey, models })` / `openaiCompatibleText(model, { baseURL, apiKey })` and native `@tanstack/ai-openai` / `-anthropic` adapters produce exactly the `/v1/chat/completions` and `/v1/messages` wire formats ficta already routes (`config.ts:64-94`). A `createFileRoute('/api/chat')` server handler streams SSE via `chat()` + `toServerSentEventsResponse()`.
 - **Repo is already a pnpm workspace** (`pnpm-workspace.yaml` present, everything at root today). Tooling: Biome, Vitest, tsc, ESM, Node ≥20, pnpm 11.
 
@@ -69,7 +88,7 @@ src/                           # existing ficta core (root package, stays put)
   surrogate.ts                 # NEW  SurrogateStrategy interface + hex strategy  ← surrogate seam
   vault.ts                     # takes an injected SurrogateStrategy
   plugins/
-    index.ts                   # register pii plugin behind FICTA_PII=1
+    index.ts                   # pii DetectorPlugin, gated on FICTA_PII_ENABLED (pii.enabled)
     pii/
       index.ts                 # DetectorPlugin: composes recognizers → ProtectedValue[] kind:"pii"
       recognizer.ts            # NEW  PiiRecognizer interface  ← detection-backend seam
@@ -85,10 +104,10 @@ docs/
 
 ## Work
 1. **Networked proxy foundation.** Sole code blocker: hardcoded bind host at `src/server.ts:268`. Add `FICTA_HOST` to `Config` (`src/config.ts:19-55`), default `127.0.0.1`, container sets `0.0.0.0`. Proxy already runs standalone (`src/server.ts:511`). `Dockerfile` + compose. **fail-closed OFF** here (doesn't help PII).
-2. **PII detector plugin** — core new work. A `DetectorPlugin` (`kind:"detector"`, `detectText`) returning `ProtectedValue[]` with `kind:"pii"`; the engine wires tokenize+restore.
-   - **Structured, in-process, high recall:** regex for email, phone, SSN, card (+Luhn), IP, bank/routing, DOB.
-   - **Unstructured, out-of-process:** names/addresses/orgs via a **Microsoft Presidio** (or NER) **sidecar** — `detectText` POSTs text, maps results to `ProtectedValue[]`. Main latency/cost (whole-doc NER per request).
-   - Register in `defaultPlugins` (`src/plugins/index.ts`) behind `FICTA_PII=1`.
+2. **PII detector plugin** — a `DetectorPlugin` (`kind:"detector"`, `detectText`) emitting `ProtectedValue`s with `kind:"pii"`; the engine wires tokenize+restore.
+   - **Structured, in-process, high precision — DONE:** `regexRecognizer` covers email, US SSN, credit-card (Luhn). Easy additions: phone, IP, bank/routing, DOB.
+   - **Unstructured, out-of-process — TODO:** names/addresses/orgs via a **Microsoft Presidio** (or NER) **sidecar** — an async `presidioRecognizer` that POSTs text and maps results to `ProtectedValue[]`; gate it on `ctx.surface === "body"` so headers/query don't each hit the sidecar. The async detection path (done) is what makes this a drop-in behind `PiiRecognizer`.
+   - Registered in `defaultPlugins`, **off by default** via `FICTA_PII_ENABLED` ↔ `pii.enabled` (full `config`/`setup`/`discover`, like Doppler).
 3. **`apps/web` TanStack Start chat UI** — `/api/chat` server route using TanStack AI with the adapter `baseURL` pointed at the ficta proxy; `useChat` on the client. Provider/model picker for "any model, BYO key." Optional PII-transparency UX later (show what was redacted).
 4. **Surrogate realism (optional).** `FICTA_<hex>` tokens may degrade legal reasoning; per-`kind` realistic, consistent fake surrogates preserve fluency — a `vault.ts` change. Defer unless output quality needs it.
 5. **Positioning doc** — `docs/threat-model-pii.md` (style of `docs/threat-model.md`): **best-effort reduction, not a guarantee**; undetected PII can pass. Matters for the firm's own compliance claims.

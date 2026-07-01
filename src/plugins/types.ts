@@ -202,13 +202,13 @@ export interface RegistrySourcePlugin extends FictaPluginBase {
   loadValues(): readonly ProtectedValue[];
 
   /** Optional detector/agent capabilities can coexist, but the registry contract remains required. */
-  detectText?(text: string, ctx: DetectTextContext): readonly ProtectedValue[];
+  detectText?(text: string, ctx: DetectTextContext): readonly ProtectedValue[] | Promise<readonly ProtectedValue[]>;
   agents?: readonly AgentIntegration[];
 }
 
 export interface DetectorPlugin extends FictaPluginBase {
   kind: "detector";
-  detectText(text: string, ctx: DetectTextContext): readonly ProtectedValue[];
+  detectText(text: string, ctx: DetectTextContext): readonly ProtectedValue[] | Promise<readonly ProtectedValue[]>;
   /**
    * Optional config bindings — an `enabled` flag and any backend settings — declared and surfaced
    * exactly like a registry source (env ↔ TOML ↔ `ficta setup`). A detector self-gates on its own

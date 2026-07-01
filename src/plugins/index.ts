@@ -3,6 +3,7 @@ import { isRecord } from "../vault.js";
 import { builtInAgentPlugin } from "./agents.js";
 import { dopplerPlugin, resetDopplerPluginCacheForTests } from "./doppler.js";
 import { knownEnvPlugin, resetKnownEnvPluginCacheForTests } from "./known-env.js";
+import { piiPlugin } from "./pii/index.js";
 import { buildRegistryPolicy, protectedValueExcludedBy, validateRegistryPolicy } from "./policy.js";
 import type {
   AgentIntegration,
@@ -27,6 +28,8 @@ export {
   piModelsConfig,
 } from "./agents.js";
 export { dopplerPlugin } from "./doppler.js";
+export { piiPlugin } from "./pii/index.js";
+export type { PiiRecognizer } from "./pii/recognizer.js";
 export { buildRegistryPolicy, protectedValueExcludedBy } from "./policy.js";
 export type {
   AgentBypassContext,
@@ -58,7 +61,7 @@ export type {
   RegistrySourcePlugin,
 } from "./types.js";
 
-export const defaultPlugins: readonly FictaPlugin[] = [dopplerPlugin, knownEnvPlugin, builtInAgentPlugin];
+export const defaultPlugins: readonly FictaPlugin[] = [dopplerPlugin, knownEnvPlugin, piiPlugin, builtInAgentPlugin];
 
 /**
  * Plugins core vouches for. Only these may contribute *enforced* registry exclusions

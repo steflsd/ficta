@@ -53,7 +53,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     let searchToSend = url.search;
     let queryRedaction: SurfaceRedaction | undefined;
     if (protect && searchToSend) {
-      const { search: redactedSearch, ...redaction } = redactQueryString(engine, url);
+      const { search: redactedSearch, ...redaction } = await redactQueryString(engine, url);
       queryRedaction = redaction;
       if (redaction.leaks > 0 && cfg.failClosed) {
         recordProtection(stats, engine, {
@@ -101,7 +101,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
       n = logRequest({ method, path: url.pathname, body: bodyText, target, route });
 
       if (protect) {
-        const redaction = engine.redactBodyDetailed(bodyText, { path: url.pathname });
+        const redaction = await engine.redactBodyDetailed(bodyText, { path: url.pathname });
         const redacted = redaction.body;
         requestModel = safeRequestModel(engine, originalModel, requestModelFromBody(redacted));
         if (queryRedaction) {
@@ -171,7 +171,7 @@ export async function startProxy(opts: { port?: number; plugins?: readonly Ficta
     }
 
     if (protect) {
-      const redaction = redactNonAuthHeaders(engine, headers);
+      const redaction = await redactNonAuthHeaders(engine, headers);
       if (redaction.leaks > 0 && cfg.failClosed) {
         recordProtection(stats, engine, {
           requestId: n,
@@ -357,28 +357,34 @@ function restoreBufferedBody(engine: RedactionEngine, contentType: string, body:
  * every other parameter's wire bytes verbatim — re-encoding the whole query would normalize the
  * encoding of untouched, possibly signature-sensitive parameters.
  */
-function redactQueryString(engine: RedactionEngine, url: URL): QueryRedaction {
+async function redactQueryString(engine: RedactionEngine, url: URL): Promise<QueryRedaction> {
   const raw = url.search.startsWith("?") ? url.search.slice(1) : url.search;
   if (!raw) return { search: url.search, count: 0, leaks: 0, hits: [], leakHits: [] };
 
   const total = emptyRedaction();
-  const segments = raw.split("&").map((segment) => {
+  // Sequential (not Promise.all): parameters are few, and detection may hit a sidecar — keeping the
+  // shared `total` mutations ordered avoids any interleaving surprises.
+  const segments: string[] = [];
+  for (const segment of raw.split("&")) {
     const eq = segment.indexOf("=");
     const rawKey = eq === -1 ? segment : segment.slice(0, eq);
     const rawValue = eq === -1 ? undefined : segment.slice(eq + 1);
 
-    const redactedKey = engine.redactTextDetailed(decodeQueryComponent(rawKey), { path: url.pathname });
+    const redactedKey = await engine.redactTextDetailed(decodeQueryComponent(rawKey), { path: url.pathname });
     addRedaction(total, redactedKey);
     const outKey = redactedKey.count > 0 ? encodeURIComponent(redactedKey.text) : rawKey;
 
-    if (rawValue === undefined) return outKey;
+    if (rawValue === undefined) {
+      segments.push(outKey);
+      continue;
+    }
 
-    const redactedValue = engine.redactTextDetailed(decodeQueryComponent(rawValue), { path: url.pathname });
+    const redactedValue = await engine.redactTextDetailed(decodeQueryComponent(rawValue), { path: url.pathname });
     addRedaction(total, redactedValue);
     const outValue = redactedValue.count > 0 ? encodeURIComponent(redactedValue.text) : rawValue;
 
-    return `${outKey}=${outValue}`;
-  });
+    segments.push(`${outKey}=${outValue}`);
+  }
 
   return { search: `?${segments.join("&")}`, ...total };
 }
@@ -414,11 +420,11 @@ function contentTypeBase(contentType: string): string {
   return contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
 }
 
-function redactNonAuthHeaders(engine: RedactionEngine, headers: Headers): SurfaceRedaction {
+async function redactNonAuthHeaders(engine: RedactionEngine, headers: Headers): Promise<SurfaceRedaction> {
   const total = emptyRedaction();
   for (const [name, value] of [...headers]) {
     if (REQUIRED_AUTH_HEADER_NAMES.has(name.toLowerCase())) continue;
-    const redacted = engine.redactTextDetailed(value, { header: name, surface: "header" });
+    const redacted = await engine.redactTextDetailed(value, { header: name, surface: "header" });
     if (redacted.count > 0) headers.set(name, redacted.text);
     addRedaction(total, redacted);
   }

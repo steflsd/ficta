@@ -68,13 +68,13 @@ export class ProtectionEngine implements RedactionEngine {
     return this.size > 0 || this.hasDetectors;
   }
 
-  redactBody(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): BodyRedactionResult {
-    const details = this.redactBodyDetailed(body, ctx);
+  async redactBody(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): Promise<BodyRedactionResult> {
+    const details = await this.redactBodyDetailed(body, ctx);
     return { body: details.body, count: details.count, leaks: details.leaks };
   }
 
-  redactBodyDetailed(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): BodyRedactionDetails {
-    this.registerDetectedValues(body, { ...ctx, surface: "body" });
+  async redactBodyDetailed(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): Promise<BodyRedactionDetails> {
+    await this.registerDetectedValues(body, { ...ctx, surface: "body" });
     const redacted = this.vault.redactBodyDetailed(body);
     const leakValues = this.vault.leakValues(redacted.body);
     return {
@@ -86,14 +86,14 @@ export class ProtectionEngine implements RedactionEngine {
     };
   }
 
-  redactText(text: string, ctx: TextRedactionContext = {}): TextRedactionResult {
-    const details = this.redactTextDetailed(text, ctx);
+  async redactText(text: string, ctx: TextRedactionContext = {}): Promise<TextRedactionResult> {
+    const details = await this.redactTextDetailed(text, ctx);
     return { text: details.text, count: details.count, leaks: details.leaks };
   }
 
-  redactTextDetailed(text: string, ctx: TextRedactionContext = {}): TextRedactionDetails {
+  async redactTextDetailed(text: string, ctx: TextRedactionContext = {}): Promise<TextRedactionDetails> {
     const { surface = "header", ...rest } = ctx;
-    this.registerDetectedValues(text, { ...rest, surface });
+    await this.registerDetectedValues(text, { ...rest, surface });
     const redacted = this.vault.redactTextDetailed(text);
     const leakValues = this.vault.leakValues(redacted.text);
     return {
@@ -128,13 +128,13 @@ export class ProtectionEngine implements RedactionEngine {
     return this.vault.restoreEventStream(sseRestoreAdapterFor(wire));
   }
 
-  private registerDetectedValues(text: string, ctx: DetectTextContext): number {
+  private async registerDetectedValues(text: string, ctx: DetectTextContext): Promise<number> {
     if (!text) return 0;
     let added = 0;
     for (const plugin of this.plugins) {
       let detected: readonly ProtectedValue[];
       try {
-        detected = plugin.detectText?.(text, ctx) ?? [];
+        detected = (await plugin.detectText?.(text, ctx)) ?? [];
       } catch {
         // Detector plugins are best-effort and must not take down the exact-match proxy path.
         continue;

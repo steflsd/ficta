@@ -6,7 +6,7 @@ const SECRET = "test-secret-value-12345";
 const EMAIL = "alice@example.com";
 
 describe("protection engine plugins", () => {
-  it("loads exact registry values from a plugin and round-trips them", () => {
+  it("loads exact registry values from a plugin and round-trips them", async () => {
     const plugin: RegistrySourcePlugin = {
       kind: "registry-source",
       name: "fixture-registry",
@@ -22,7 +22,7 @@ describe("protection engine plugins", () => {
     expect(engine.registrySize).toBe(1);
     expect(engine.enabled).toBe(true);
 
-    const redacted = engine.redactBody(JSON.stringify({ content: `secret=${SECRET}` }));
+    const redacted = await engine.redactBody(JSON.stringify({ content: `secret=${SECRET}` }));
     expect(redacted.count).toBe(1);
     expect(redacted.leaks).toBe(0);
     expect(redacted.body).not.toContain(SECRET);
@@ -30,7 +30,7 @@ describe("protection engine plugins", () => {
     expect(engine.restoreText(redacted.body)).toContain(SECRET);
   });
 
-  it("isolates detector plugin exceptions", () => {
+  it("isolates detector plugin exceptions", async () => {
     const engine = new ProtectionEngine({
       plugins: [
         {
@@ -43,14 +43,14 @@ describe("protection engine plugins", () => {
       ],
     });
 
-    expect(engine.redactBody(JSON.stringify({ content: SECRET }))).toEqual({
+    expect(await engine.redactBody(JSON.stringify({ content: SECRET }))).toEqual({
       body: JSON.stringify({ content: SECRET }),
       count: 0,
       leaks: 0,
     });
   });
 
-  it("supports request-time detector plugins for future PII-style values", () => {
+  it("supports request-time detector plugins for future PII-style values", async () => {
     const piiPlugin: DetectorPlugin = {
       kind: "detector",
       name: "fixture-pii-detector",
@@ -70,7 +70,7 @@ describe("protection engine plugins", () => {
     expect(engine.registrySize).toBe(0);
     expect(engine.enabled).toBe(true);
 
-    const redacted = engine.redactBody(JSON.stringify({ content: `contact ${EMAIL}` }));
+    const redacted = await engine.redactBody(JSON.stringify({ content: `contact ${EMAIL}` }));
     expect(redacted.count).toBe(1);
     expect(redacted.leaks).toBe(0);
     expect(redacted.body).not.toContain(EMAIL);
@@ -99,7 +99,7 @@ describe("protection engine plugins", () => {
       }
     });
 
-    it("drops excluded names from opts.values and detector output but keeps real secrets", () => {
+    it("drops excluded names from opts.values and detector output but keeps real secrets", async () => {
       saved = Object.fromEntries(POLICY_ENV.map((k) => [k, process.env[k]]));
       // Keep launch sources quiet (no Doppler CLI spawn, no ambient env/.env) so the built-in
       // Doppler plugin contributes only its trusted DOPPLER_CONFIG metadata exclusion.
@@ -148,7 +148,7 @@ describe("protection engine plugins", () => {
       const body = JSON.stringify({
         content: "detector-routing-label / real-secret-value-abc / opts-routing-label / kept-secret-value-xyz",
       });
-      const redacted = engine.redactBody(body);
+      const redacted = await engine.redactBody(body);
 
       expect(redacted.leaks).toBe(0);
       // Excluded names (from both detector and opts.values) are left intact.
