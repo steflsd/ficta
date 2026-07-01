@@ -21,7 +21,14 @@
     "web:typecheck": "pnpm --filter @steflsd/ficta-web typecheck",
     "dev:all": "turbo run dev",
     "dev:doppler": "doppler run -- pnpm dev:all",
-    "update": "pnpm -r update -i -L"
+    "update": "pnpm -r update -i -L",
+    "//release": "Local release prep for @steflsd/ficta (bump + changelog + tag). Pushing the tag triggers CI to publish; run npm publish from packages/ficta only as a manual escape hatch.",
+    "release:check": "pnpm --filter @steflsd/ficta release:check",
+    "release:beta": "pnpm --filter @steflsd/ficta release:beta",
+    "release:stable": "pnpm --filter @steflsd/ficta release:stable",
+    "release:patch": "pnpm --filter @steflsd/ficta release:patch",
+    "release:minor": "pnpm --filter @steflsd/ficta release:minor",
+    "release:major": "pnpm --filter @steflsd/ficta release:major"
   },
   "devDependencies": {
     "turbo": "^2.10.2"
