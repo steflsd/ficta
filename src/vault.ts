@@ -1,5 +1,5 @@
-import { createHmac, randomBytes } from "node:crypto";
 import { envFlag } from "./env-flags.js";
+import { hexSurrogateStrategy, type SurrogateStrategy } from "./surrogate.js";
 
 /**
  * The vault: redact registered/detected values → surrogates on the way up, restore them on the
@@ -12,12 +12,7 @@ import { envFlag } from "./env-flags.js";
  * fail-closed leak scanning, and streaming restore.
  */
 
-const SUR_PREFIX = "FICTA_";
-const SUR_HEX_LEN = 32;
-const SUR_LEN = SUR_PREFIX.length + SUR_HEX_LEN;
-const SUR_RE = new RegExp(`${SUR_PREFIX}[0-9a-f]{${SUR_HEX_LEN}}`, "g");
 const ENV_SURROGATE_KEY = process.env.FICTA_SURROGATE_KEY;
-const SURROGATE_KEY = ENV_SURROGATE_KEY ?? randomBytes(32).toString("hex");
 
 export interface VaultValue {
   value: string;
@@ -31,17 +26,15 @@ export function surrogateKeyWarning(): string | undefined {
   return undefined;
 }
 
-function surrogateFor(value: string): string {
-  return SUR_PREFIX + createHmac("sha256", SURROGATE_KEY).update(value).digest("hex").slice(0, SUR_HEX_LEN);
-}
-
 export class Vault {
   private readonly values: string[] = []; // known values, longest first
   private readonly seen = new Set<string>();
   private readonly toSur = new Map<string, string>();
   private readonly toVal = new Map<string, string>();
+  private readonly surrogate: SurrogateStrategy;
 
-  constructor(values: ReadonlyArray<VaultValue> = []) {
+  constructor(values: ReadonlyArray<VaultValue> = [], surrogate: SurrogateStrategy = hexSurrogateStrategy()) {
+    this.surrogate = surrogate;
     this.register(values);
   }
 
@@ -63,7 +56,7 @@ export class Vault {
       if (!value || this.seen.has(value)) continue;
       this.seen.add(value);
       this.values.push(value);
-      const sur = surrogateFor(value);
+      const sur = this.surrogate.mint(value);
       this.toSur.set(value, sur);
       this.toVal.set(sur, value);
       added++;
@@ -125,7 +118,7 @@ export class Vault {
   /** Restore surrogates → real values in a chunk of text. */
   restoreText(text: string): string {
     if (this.toVal.size === 0 || !text) return text;
-    return text.replace(SUR_RE, (m) => this.toVal.get(m) ?? m);
+    return text.replace(this.surrogate.pattern, (m) => this.toVal.get(m) ?? m);
   }
 
   /**
@@ -150,7 +143,7 @@ export class Vault {
   /** In-place surrogate restore for JSON text, escaping each value for its string context. */
   restoreJsonText(text: string): string {
     if (this.toVal.size === 0 || !text) return text;
-    return text.replace(SUR_RE, (m) => {
+    return text.replace(this.surrogate.pattern, (m) => {
       const value = this.toVal.get(m);
       return value === undefined ? m : jsonStringEscape(value);
     });
@@ -197,7 +190,7 @@ export class Vault {
   restoreStream(): TransformStream<Uint8Array, Uint8Array> {
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
-    const HOLD = SUR_LEN - 1; // max partial surrogate; a full token is SUR_LEN chars
+    const HOLD = this.surrogate.maxLength - 1; // max partial surrogate; a full token is maxLength chars
     let buf = "";
     const self = this;
     return new TransformStream<Uint8Array, Uint8Array>({
@@ -227,6 +220,7 @@ export class Vault {
       (text) => this.restoreText(text),
       (text) => this.restoreJsonText(text),
       adapter,
+      this.surrogate,
     );
   }
 }
@@ -268,6 +262,7 @@ function createSseRestoreStream(
   restoreText: (text: string) => string,
   restoreJsonText: (text: string) => string,
   adapter: SseRestoreAdapter,
+  surrogate: SurrogateStrategy,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -286,12 +281,12 @@ function createSseRestoreStream(
         if (!boundary) break;
         const record = buf.slice(0, boundary.index + boundary.length);
         buf = buf.slice(boundary.index + boundary.length);
-        encode(restoreSseRecord(record, pending, restoreText, restoreJsonText, adapter), controller);
+        encode(restoreSseRecord(record, pending, restoreText, restoreJsonText, adapter, surrogate), controller);
       }
     },
     flush(controller) {
       buf += decoder.decode();
-      if (buf) encode(restoreSseRecord(buf, pending, restoreText, restoreJsonText, adapter), controller);
+      if (buf) encode(restoreSseRecord(buf, pending, restoreText, restoreJsonText, adapter, surrogate), controller);
       encode(flushPendingSseFragments(pending, restoreText), controller);
     },
   });
@@ -303,6 +298,7 @@ function restoreSseRecord(
   restoreText: (text: string) => string,
   restoreJsonText: (text: string) => string,
   adapter: SseRestoreAdapter,
+  surrogate: SurrogateStrategy,
 ): string {
   const parsed = parseSseRecord(record);
   if (parsed.data?.trim() === "[DONE]") {
@@ -336,7 +332,7 @@ function restoreSseRecord(
   for (const fragment of fragments) {
     const combined = (pending.get(fragment.key)?.value ?? "") + fragment.value;
     const restored = restoreText(combined);
-    const { emit, hold } = splitForPotentialSurrogate(restored);
+    const { emit, hold } = splitForPotentialSurrogate(restored, surrogate);
     if (hold) pending.set(fragment.key, { value: hold, eventName: fragment.eventName, flushData: fragment.flushData });
     else pending.delete(fragment.key);
     fragment.setValue(emit);
@@ -363,22 +359,15 @@ function flushPendingSseFragments(
   return out;
 }
 
-function splitForPotentialSurrogate(text: string): { emit: string; hold: string } {
-  const max = Math.min(SUR_LEN - 1, text.length);
+function splitForPotentialSurrogate(text: string, surrogate: SurrogateStrategy): { emit: string; hold: string } {
+  const max = Math.min(surrogate.maxLength - 1, text.length);
   for (let length = max; length > 0; length -= 1) {
     const suffix = text.slice(text.length - length);
-    if (isPotentialSurrogatePrefix(suffix)) {
+    if (surrogate.isPotentialPrefix(suffix)) {
       return { emit: text.slice(0, text.length - length), hold: suffix };
     }
   }
   return { emit: text, hold: "" };
-}
-
-function isPotentialSurrogatePrefix(value: string): boolean {
-  if (!value || value.length >= SUR_LEN) return false;
-  if (SUR_PREFIX.startsWith(value)) return true;
-  if (!value.startsWith(SUR_PREFIX)) return false;
-  return /^[0-9a-f]*$/.test(value.slice(SUR_PREFIX.length));
 }
 
 function findSseRecordBoundary(text: string): { index: number; length: number } | undefined {

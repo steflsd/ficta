@@ -12,10 +12,11 @@ import type {
   PluginDiscovery,
   PluginDiscoveryStatus,
   ProtectedValue,
+  RegistryPluginConfig,
+  RegistryPluginSetup,
   RegistryPolicy,
   RegistrySetupDiscoveryContext,
   RegistrySetupSource,
-  RegistrySourcePlugin,
 } from "./types.js";
 
 export {
@@ -66,16 +67,16 @@ export const defaultPlugins: readonly FictaPlugin[] = [dopplerPlugin, knownEnvPl
 const TRUSTED_PLUGINS: ReadonlySet<FictaPlugin> = new Set(defaultPlugins);
 
 export function pluginConfigBindings(plugins: readonly FictaPlugin[] = defaultPlugins): ConfigBinding[] {
-  return registryPlugins(plugins).flatMap((plugin) => [...plugin.config.bindings]);
+  return collectPluginConfigs(plugins).flatMap((config) => [...config.bindings]);
 }
 
 export function pluginConfigSections(plugins: readonly FictaPlugin[] = defaultPlugins): ConfigSection[] {
-  return registryPlugins(plugins).flatMap((plugin) => [...plugin.config.sections]);
+  return collectPluginConfigs(plugins).flatMap((config) => [...config.sections]);
 }
 
 export function pluginEnvDefaults(plugins: readonly FictaPlugin[] = defaultPlugins): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const plugin of registryPlugins(plugins)) Object.assign(out, plugin.config.envDefaults);
+  for (const config of collectPluginConfigs(plugins)) Object.assign(out, config.envDefaults);
   return out;
 }
 
@@ -84,7 +85,7 @@ export function registrySetupDefaults(
   plugins: readonly FictaPlugin[] = defaultPlugins,
 ): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const plugin of registryPlugins(plugins)) Object.assign(out, plugin.setup.registryDefaults?.(ctx) ?? {});
+  for (const setup of collectPluginSetups(plugins)) Object.assign(out, setup.registryDefaults?.(ctx) ?? {});
   return out;
 }
 
@@ -92,25 +93,47 @@ export function registrySetupSources(
   ctx: RegistrySetupDiscoveryContext = { env: process.env },
   plugins: readonly FictaPlugin[] = defaultPlugins,
 ): RegistrySetupSource[] {
-  return registryPlugins(plugins).flatMap((plugin) => [...plugin.setup.registrySources(ctx)]);
+  return collectPluginSetups(plugins).flatMap((setup) => [...setup.registrySources(ctx)]);
 }
 
 export function validatePluginBoundaries(plugins: readonly FictaPlugin[]): void {
   for (const rawPlugin of plugins as unknown as readonly Record<string, unknown>[]) {
     const name = typeof rawPlugin.name === "string" ? rawPlugin.name : "<unnamed>";
-    const hasRegistryHook =
-      "loadValues" in rawPlugin || "discover" in rawPlugin || "config" in rawPlugin || "setup" in rawPlugin;
-
     validateRegistryPolicy(name, rawPlugin.registryPolicy);
 
-    if (rawPlugin.kind !== "registry-source") {
-      if (hasRegistryHook) {
-        throw new Error(`ficta plugin ${name} declares registry-source hooks but is not kind="registry-source"`);
+    // loadValues is the registry-source-defining capability; no other kind may declare it.
+    if (rawPlugin.kind !== "registry-source" && "loadValues" in rawPlugin) {
+      throw new Error(`ficta plugin ${name} declares registry-source hooks but is not kind="registry-source"`);
+    }
+
+    if (rawPlugin.kind === "detector") {
+      if (typeof rawPlugin.detectText !== "function") {
+        throw new Error(`detector plugin ${name} must implement detectText()`);
       }
-      if (rawPlugin.kind !== "detector" && rawPlugin.kind !== "agent-integration") {
-        throw new Error(`ficta plugin ${name} has unknown kind ${String(rawPlugin.kind)}`);
+      // config/setup/discover are optional for a detector — validate shape only when declared.
+      if ("config" in rawPlugin) validatePluginConfigShape(name, rawPlugin.config);
+      if (
+        "setup" in rawPlugin &&
+        (!isRecord(rawPlugin.setup) || typeof rawPlugin.setup.registrySources !== "function")
+      ) {
+        throw new Error(`detector plugin ${name} must define setup.registrySources() when it declares setup`);
+      }
+      if ("discover" in rawPlugin && typeof rawPlugin.discover !== "function") {
+        throw new Error(`detector plugin ${name} discover must be a function`);
       }
       continue;
+    }
+
+    if (rawPlugin.kind === "agent-integration") {
+      // Agent integrations carry only `agents`; config/setup/discover belong to other kinds.
+      if ("config" in rawPlugin || "setup" in rawPlugin || "discover" in rawPlugin) {
+        throw new Error(`ficta plugin ${name} declares registry-source hooks but is not kind="registry-source"`);
+      }
+      continue;
+    }
+
+    if (rawPlugin.kind !== "registry-source") {
+      throw new Error(`ficta plugin ${name} has unknown kind ${String(rawPlugin.kind)}`);
     }
 
     if (typeof rawPlugin.loadValues !== "function") {
@@ -119,27 +142,39 @@ export function validatePluginBoundaries(plugins: readonly FictaPlugin[]): void 
     if (typeof rawPlugin.discover !== "function") {
       throw new Error(`registry-source plugin ${name} must implement discover()`);
     }
-    if (!isRecord(rawPlugin.config)) {
-      throw new Error(`registry-source plugin ${name} must define config metadata`);
-    }
-    if (!Array.isArray(rawPlugin.config.bindings)) {
-      throw new Error(`registry-source plugin ${name} config.bindings must be an array`);
-    }
-    if (!Array.isArray(rawPlugin.config.sections)) {
-      throw new Error(`registry-source plugin ${name} config.sections must be an array`);
-    }
-    if (!isRecord(rawPlugin.config.envDefaults)) {
-      throw new Error(`registry-source plugin ${name} config.envDefaults must be an object`);
-    }
+    validatePluginConfigShape(name, rawPlugin.config);
     if (!isRecord(rawPlugin.setup) || typeof rawPlugin.setup.registrySources !== "function") {
       throw new Error(`registry-source plugin ${name} must define setup.registrySources()`);
     }
   }
 }
 
-function registryPlugins(plugins: readonly FictaPlugin[]): RegistrySourcePlugin[] {
+/** Shared shape check for a plugin's `config` metadata (registry-source required, detector optional). */
+function validatePluginConfigShape(name: string, config: unknown): void {
+  if (!isRecord(config)) {
+    throw new Error(`plugin ${name} must define config metadata`);
+  }
+  if (!Array.isArray(config.bindings)) {
+    throw new Error(`plugin ${name} config.bindings must be an array`);
+  }
+  if (!Array.isArray(config.sections)) {
+    throw new Error(`plugin ${name} config.sections must be an array`);
+  }
+  if (!isRecord(config.envDefaults)) {
+    throw new Error(`plugin ${name} config.envDefaults must be an object`);
+  }
+}
+
+/** Config metadata declared by any plugin kind (registry-source always; detector optionally). */
+function collectPluginConfigs(plugins: readonly FictaPlugin[]): RegistryPluginConfig[] {
   validatePluginBoundaries(plugins);
-  return plugins.filter((plugin): plugin is RegistrySourcePlugin => plugin.kind === "registry-source");
+  return plugins.map((plugin) => plugin.config).filter((config): config is RegistryPluginConfig => isRecord(config));
+}
+
+/** Setup metadata declared by any plugin kind (registry-source always; detector optionally). */
+function collectPluginSetups(plugins: readonly FictaPlugin[]): RegistryPluginSetup[] {
+  validatePluginBoundaries(plugins);
+  return plugins.map((plugin) => plugin.setup).filter((setup): setup is RegistryPluginSetup => isRecord(setup));
 }
 
 export interface PluginRegistrySnapshot {
@@ -165,7 +200,13 @@ export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlug
 
   for (const plugin of plugins) {
     pluginNames.push(plugin.name);
-    if (plugin.kind !== "registry-source") continue;
+
+    if (plugin.kind !== "registry-source") {
+      // A non-registry plugin (e.g. a config-driven detector) contributes no exact values at load
+      // time, but may still report a discovery/status line for the startup banner.
+      if (plugin.discover) collectDiscovery(plugin.name, plugin.discover, discoveries);
+      continue;
+    }
 
     try {
       const loaded = plugin.loadValues();
@@ -189,20 +230,29 @@ export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlug
       continue;
     }
 
-    try {
-      discoveries.push(...plugin.discover());
-    } catch {
-      discoveries.push({
-        id: `${plugin.name}/discover`,
-        plugin: plugin.name,
-        label: plugin.name,
-        status: "error",
-        message: "plugin threw while discovering sources",
-      });
-    }
+    collectDiscovery(plugin.name, plugin.discover, discoveries);
   }
 
   return { values, pluginNames, discoveries, registryPolicy, policyExcluded, policyExcludedBySource };
+}
+
+/** Run a plugin's discover() and append its lines, turning a throw into a safe error discovery. */
+function collectDiscovery(
+  name: string,
+  discover: () => readonly PluginDiscovery[],
+  discoveries: PluginDiscovery[],
+): void {
+  try {
+    discoveries.push(...discover());
+  } catch {
+    discoveries.push({
+      id: `${name}/discover`,
+      plugin: name,
+      label: name,
+      status: "error",
+      message: "plugin threw while discovering sources",
+    });
+  }
 }
 
 /**

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { type Context, Hono } from "hono";
 import { type Config, loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
-import { ProtectionEngine, type ProtectionHit } from "./engine.js";
+import { ProtectionEngine } from "./engine.js";
 import { logRequest, logResponse, runDir } from "./log.js";
 import {
   type FictaPlugin,
@@ -15,6 +15,7 @@ import {
   registryPolicyLines,
 } from "./plugins/index.js";
 import { ProtectionStats, type ProtectionStatsSnapshot, type ProtectionSurface } from "./protection-stats.js";
+import type { ProtectionHit, RedactionEngine } from "./redaction-engine.js";
 import { surrogateKeyWarning } from "./vault.js";
 import { type Wire, wireOf } from "./wire.js";
 
@@ -34,7 +35,7 @@ export interface ProxyHandle {
 /** Start the redaction proxy. Returns the bound port + a handle to close it. */
 export async function startProxy(opts: { port?: number; plugins?: readonly FictaPlugin[] } = {}): Promise<ProxyHandle> {
   const cfg = loadConfig();
-  const engine = new ProtectionEngine({ plugins: opts.plugins });
+  const engine: RedactionEngine = new ProtectionEngine({ plugins: opts.plugins });
   const stats = new ProtectionStats(runDir);
   const app = new Hono();
 
@@ -345,7 +346,7 @@ function isJsonContentType(contentType: string): boolean {
 }
 
 /** Restore a fully-buffered body by content type: JSON-aware where possible, raw text otherwise. */
-function restoreBufferedBody(engine: ProtectionEngine, contentType: string, body: string): string {
+function restoreBufferedBody(engine: RedactionEngine, contentType: string, body: string): string {
   return isJsonContentType(contentType) ? engine.restoreJson(body) : engine.restoreText(body);
 }
 
@@ -356,7 +357,7 @@ function restoreBufferedBody(engine: ProtectionEngine, contentType: string, body
  * every other parameter's wire bytes verbatim — re-encoding the whole query would normalize the
  * encoding of untouched, possibly signature-sensitive parameters.
  */
-function redactQueryString(engine: ProtectionEngine, url: URL): QueryRedaction {
+function redactQueryString(engine: RedactionEngine, url: URL): QueryRedaction {
   const raw = url.search.startsWith("?") ? url.search.slice(1) : url.search;
   if (!raw) return { search: url.search, count: 0, leaks: 0, hits: [], leakHits: [] };
 
@@ -413,7 +414,7 @@ function contentTypeBase(contentType: string): string {
   return contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
 }
 
-function redactNonAuthHeaders(engine: ProtectionEngine, headers: Headers): SurfaceRedaction {
+function redactNonAuthHeaders(engine: RedactionEngine, headers: Headers): SurfaceRedaction {
   const total = emptyRedaction();
   for (const [name, value] of [...headers]) {
     if (REQUIRED_AUTH_HEADER_NAMES.has(name.toLowerCase())) continue;
@@ -440,7 +441,7 @@ function addRedaction(
 
 function recordProtection(
   stats: ProtectionStats,
-  engine: ProtectionEngine,
+  engine: RedactionEngine,
   args: {
     requestId?: number;
     method: string;
@@ -481,11 +482,7 @@ function requestModelFromBody(body: string): string | undefined {
   return undefined;
 }
 
-function safeRequestModel(
-  engine: ProtectionEngine,
-  original: string | undefined,
-  redacted: string | undefined,
-): string {
+function safeRequestModel(engine: RedactionEngine, original: string | undefined, redacted: string | undefined): string {
   const candidate = redacted ?? original;
   if (!candidate) return "unknown";
   if (original && engine.containsProtectedValue(original)) return "<redacted>";
@@ -494,7 +491,7 @@ function safeRequestModel(
   return candidate;
 }
 
-function safeStatsMetadata(engine: ProtectionEngine, value: string | undefined, fallback: string): string {
+function safeStatsMetadata(engine: RedactionEngine, value: string | undefined, fallback: string): string {
   const text = value?.trim();
   if (!text) return fallback;
   return engine.containsProtectedValue(text) || SURROGATE_RE.test(text) ? fallback : text;

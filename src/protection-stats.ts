@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ProtectionHit } from "./engine.js";
+import type { ProtectionHit } from "./redaction-engine.js";
 import { plural } from "./text.js";
 import type { Wire } from "./wire.js";
 

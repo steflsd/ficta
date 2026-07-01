@@ -209,9 +209,17 @@ export interface RegistrySourcePlugin extends FictaPluginBase {
 export interface DetectorPlugin extends FictaPluginBase {
   kind: "detector";
   detectText(text: string, ctx: DetectTextContext): readonly ProtectedValue[];
-  config?: never;
-  setup?: never;
-  discover?: never;
+  /**
+   * Optional config bindings — an `enabled` flag and any backend settings — declared and surfaced
+   * exactly like a registry source (env ↔ TOML ↔ `ficta setup`). A detector self-gates on its own
+   * flag; the core never adds/removes plugins by config.
+   */
+  config?: RegistryPluginConfig;
+  /** Optional `ficta setup` prompts/defaults for this detector's config. */
+  setup?: RegistryPluginSetup;
+  /** Optional startup discovery/status line (counts, names — never values). */
+  discover?(): readonly PluginDiscovery[];
+  /** Detectors have no exact values to load; `loadValues` stays a registry-source-only capability. */
   loadValues?: never;
   agents?: never;
 }

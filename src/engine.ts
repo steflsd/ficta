@@ -8,6 +8,15 @@ import {
   protectedValueExcludedBy,
   type RegistryPolicy,
 } from "./plugins/index.js";
+import type {
+  BodyRedactionDetails,
+  BodyRedactionResult,
+  ProtectionHit,
+  RedactionEngine,
+  TextRedactionContext,
+  TextRedactionDetails,
+  TextRedactionResult,
+} from "./redaction-engine.js";
 import { Vault } from "./vault.js";
 import type { Wire } from "./wire.js";
 import { sseRestoreAdapterFor } from "./wire-restore.js";
@@ -17,44 +26,12 @@ export interface ProtectionEngineOptions {
   values?: readonly ProtectedValue[];
 }
 
-export interface BodyRedactionResult {
-  body: string;
-  count: number;
-  leaks: number;
-}
-
-export interface TextRedactionResult {
-  text: string;
-  count: number;
-  leaks: number;
-}
-
-/** Safe metadata about a protected value that matched. Never includes the protected literal. */
-export interface ProtectionHit {
-  name: string;
-  source: string;
-  plugin?: string;
-  kind?: ProtectedValue["kind"];
-  confidence?: ProtectedValue["confidence"];
-}
-
-export interface BodyRedactionDetails extends BodyRedactionResult {
-  hits: ProtectionHit[];
-  leakHits: ProtectionHit[];
-}
-
-export interface TextRedactionDetails extends TextRedactionResult {
-  hits: ProtectionHit[];
-  leakHits: ProtectionHit[];
-}
-
-type TextRedactionContext = Omit<DetectTextContext, "surface"> & { surface?: DetectTextContext["surface"] };
-
 /**
- * Security-critical orchestration layer. Plugins can only add values; the vault does the actual
- * replacement/restore/leak check. That keeps the core invariant testable and plugin-agnostic.
+ * Security-critical orchestration layer and the built-in {@link RedactionEngine}. Plugins can only
+ * add values; the vault does the actual replacement/restore/leak check. That keeps the core
+ * invariant testable and plugin-agnostic.
  */
-export class ProtectionEngine {
+export class ProtectionEngine implements RedactionEngine {
   private readonly plugins: readonly FictaPlugin[];
   private readonly hasDetectors: boolean;
   private readonly vault: Vault;

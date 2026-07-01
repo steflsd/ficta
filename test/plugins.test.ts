@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildRegistryPolicy,
+  type FictaPlugin,
   loadPluginRegistry,
+  pluginConfigBindings,
+  pluginConfigSections,
+  pluginEnvDefaults,
   protectedValueExcludedBy,
   registryDiscoveryLines,
   registrySetupDefaults,
@@ -481,5 +485,67 @@ exit 64
     expect(protectedValueExcludedBy({ name: "FOO" }, untrusted)).toBeUndefined();
     // Diagnostics may still see untrusted rules via the explicit opt-in.
     expect(protectedValueExcludedBy({ name: "FOO" }, untrusted, { includeUntrusted: true })).toBeTruthy();
+  });
+});
+
+describe("config-driven detector plugins", () => {
+  const detector: FictaPlugin = {
+    kind: "detector",
+    name: "fixture-pii",
+    detectText: () => [],
+    config: {
+      envDefaults: { FICTA_PII_ENABLED: "0" },
+      bindings: [{ env: "FICTA_PII_ENABLED", path: ["registry", "pii", "enabled"], kind: "boolean" }],
+      sections: [{ path: ["registry", "pii"], keys: ["enabled"] }],
+    },
+    setup: {
+      registrySources: () => [
+        {
+          id: "fixture-pii/detector",
+          label: "PII detector",
+          defaultEnabled: false,
+          enabledValues: () => ({ FICTA_PII_ENABLED: "1" }),
+          disabledValues: () => ({ FICTA_PII_ENABLED: "0" }),
+        },
+      ],
+    },
+    discover: () => [
+      { id: "fixture-pii/detector", plugin: "fixture-pii", label: "PII detector", status: "disabled", valueCount: 0 },
+    ],
+  };
+
+  it("accepts a detector that declares config/setup/discover", () => {
+    expect(() => validatePluginBoundaries([detector])).not.toThrow();
+  });
+
+  it("surfaces a detector's config bindings, sections, env defaults, and setup source", () => {
+    expect(pluginConfigBindings([detector]).map((b) => b.env)).toContain("FICTA_PII_ENABLED");
+    expect(pluginConfigSections([detector]).some((s) => s.path.join(".") === "registry.pii")).toBe(true);
+    expect(pluginEnvDefaults([detector])).toMatchObject({ FICTA_PII_ENABLED: "0" });
+    expect(registrySetupSources({ env: process.env }, [detector]).some((s) => s.id === "fixture-pii/detector")).toBe(
+      true,
+    );
+  });
+
+  it("reports a detector's discovery line at registry load, with no exact values", () => {
+    const snapshot = loadPluginRegistry([detector]);
+    expect(snapshot.discoveries.some((d) => d.id === "fixture-pii/detector")).toBe(true);
+    expect(snapshot.values).toHaveLength(0);
+  });
+
+  it("still forbids a detector from declaring loadValues (registry-source-only)", () => {
+    expect(() =>
+      validatePluginBoundaries([
+        { kind: "detector", name: "bad", detectText: () => [], loadValues: () => [] } as unknown as FictaPlugin,
+      ]),
+    ).toThrow(/kind="registry-source"/);
+  });
+
+  it("rejects malformed detector config", () => {
+    expect(() =>
+      validatePluginBoundaries([
+        { kind: "detector", name: "bad-config", detectText: () => [], config: {} } as unknown as FictaPlugin,
+      ]),
+    ).toThrow(/config\.bindings must be an array/);
   });
 });

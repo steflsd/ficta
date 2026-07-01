@@ -1,0 +1,78 @@
+import type { DetectTextContext, PluginRegistrySnapshot, ProtectedValue } from "./plugins/index.js";
+import type { Wire } from "./wire.js";
+
+/**
+ * The redaction contract the proxy (`server.ts`) depends on — the seam that lets an engine be
+ * swapped without touching the transport. `ProtectionEngine` is the built-in implementation; a
+ * different engine (e.g. a per-tenant or remote one) only has to satisfy this interface.
+ *
+ * Invariant preserved by any implementation: it may only redact (tokenize) outbound data and
+ * restore it on responses — it never sees or forwards auth headers, and never logs raw values.
+ */
+export interface RedactionEngine {
+  /** True when the engine may transform outbound data (has registered values or detectors). */
+  readonly enabled: boolean;
+
+  /** Redact a request body (JSON-aware) and report which values matched / leaked. */
+  redactBodyDetailed(body: string, ctx?: Omit<DetectTextContext, "surface">): BodyRedactionDetails;
+
+  /** Redact a raw string (header value, query component) and report matches / leaks. */
+  redactTextDetailed(text: string, ctx?: TextRedactionContext): TextRedactionDetails;
+
+  /** Restore surrogates → real values in a chunk of text. */
+  restoreText(text: string): string;
+
+  /** Restore surrogates in a JSON body, escaping each restored value for its string context. */
+  restoreJson(body: string): string;
+
+  /** Streaming restore for non-SSE response bodies (holds back partial surrogates at chunk edges). */
+  restoreStream(): TransformStream<Uint8Array, Uint8Array>;
+
+  /** Streaming restore for a provider SSE stream, using the wire-specific reassembly adapter. */
+  restoreEventStream(wire: Wire): TransformStream<Uint8Array, Uint8Array>;
+
+  /** Conservative membership check used to keep derived metadata (paths, model names) safe to log. */
+  containsProtectedValue(text: string): boolean;
+
+  // --- Diagnostics / introspection consumed by the proxy startup banner + ProxyHandle. ---
+
+  /** Number of protected values currently loaded. */
+  readonly size: number;
+
+  /** Safe launch-time snapshot of registry-source discovery (counts, names — never values). */
+  readonly registry: PluginRegistrySnapshot;
+}
+
+/** Optional context for text redaction: which surface/header/path the text came from. */
+export type TextRedactionContext = Omit<DetectTextContext, "surface"> & { surface?: DetectTextContext["surface"] };
+
+/** Safe metadata about a protected value that matched. Never includes the protected literal. */
+export interface ProtectionHit {
+  name: string;
+  source: string;
+  plugin?: string;
+  kind?: ProtectedValue["kind"];
+  confidence?: ProtectedValue["confidence"];
+}
+
+export interface BodyRedactionResult {
+  body: string;
+  count: number;
+  leaks: number;
+}
+
+export interface TextRedactionResult {
+  text: string;
+  count: number;
+  leaks: number;
+}
+
+export interface BodyRedactionDetails extends BodyRedactionResult {
+  hits: ProtectionHit[];
+  leakHits: ProtectionHit[];
+}
+
+export interface TextRedactionDetails extends TextRedactionResult {
+  hits: ProtectionHit[];
+  leakHits: ProtectionHit[];
+}
