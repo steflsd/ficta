@@ -1,10 +1,11 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { PanelLeft, PanelLeftClose, Plus, Settings, ShieldCheck, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuthState } from "@/lib/auth/useAuthState";
-import { deleteThread, fetchThreads } from "@/lib/storage/threads";
+import { threadKeys, threadsQueryOptions } from "@/lib/storage/threadQueries";
+import { deleteThread } from "@/lib/storage/threads";
 import type { ThreadSummary } from "@/lib/storage/types";
 import { useInstanceSettings } from "@/lib/storage/useInstanceSettings";
 import { cn } from "@/lib/utils";
@@ -16,9 +17,8 @@ import { UserMenu } from "./UserMenu";
  * hides fully when closed. Lists the viewer's threads (cheap summaries, no bodies) and links each to its
  * `/chat/$threadId` route. Reuses the `threads.ts` server fns — no DB code enters the client.
  *
- * The list loads on mount; since navigating to a thread remounts the chat view, that's also the refresh on
- * open. A chat created in the current session appears after the next navigation or reload. Storage is always
- * on, so this is always shown.
+ * The list is backed by TanStack Query, so chat creation/deletion can invalidate or update one shared cache
+ * instead of relying on a one-off mount fetch. Storage is always on, so this is always shown.
  */
 export function ChatSidebar({
   open,
@@ -38,19 +38,11 @@ export function ChatSidebar({
   activeThreadId?: string;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { instanceName } = useInstanceSettings();
   const { user } = useAuthState();
-  const [threads, setThreads] = useState<ThreadSummary[] | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    fetchThreads()
-      .then((list) => alive && setThreads(list))
-      .catch(() => alive && setThreads([]));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const threadsQuery = useQuery(threadsQueryOptions);
+  const threads = threadsQuery.data ?? [];
 
   // Selecting a thread should dismiss the overlay drawer on mobile, but leave the persistent desktop column
   // open. There's no matching desktop close-on-navigate, so this is viewport-gated rather than always-close.
@@ -77,11 +69,16 @@ export function ChatSidebar({
     // The delete control overlays the row's Link; keep the click from following it.
     event.preventDefault();
     event.stopPropagation();
-    setThreads((current) => current?.filter((thread) => thread.id !== id) ?? null);
+    const previous = queryClient.getQueryData<ThreadSummary[]>(threadKeys.all);
+    queryClient.setQueryData<ThreadSummary[]>(
+      threadKeys.all,
+      (current) => current?.filter((thread) => thread.id !== id) ?? [],
+    );
     try {
       await deleteThread({ data: { threadId: id } });
+      void queryClient.invalidateQueries({ queryKey: threadKeys.all });
     } catch {
-      // Optimistic removal stands; the next load reconciles.
+      queryClient.setQueryData(threadKeys.all, previous);
     }
     // Deleting the open conversation would leave a dangling view — fall back to a fresh chat.
     if (id === activeThreadId) navigate({ to: "/" });
@@ -138,7 +135,7 @@ export function ChatSidebar({
             </div>
 
             <nav className="flex-1 overflow-y-auto p-2">
-              {threads === null ? (
+              {threadsQuery.isPending ? (
                 <p className="px-2 py-2 text-sm text-muted-foreground">Loading…</p>
               ) : threads.length === 0 ? (
                 <p className="px-2 py-2 text-sm text-muted-foreground">No saved chats yet</p>

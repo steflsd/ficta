@@ -30,6 +30,8 @@ export interface Storage {
     orgId: string,
     threadId: string,
   ): Promise<{ thread: ThreadSummary; messages: StoredMessage[] } | null>;
+  /** Creates the thread if missing and upserts the initial user message without deleting later messages. */
+  startThread(userId: string, orgId: string, threadId: string, message: StoredMessage): Promise<void>;
   /** Creates the thread if missing (title from the first user message), then snapshot-upserts messages. */
   saveThreadSnapshot(userId: string, orgId: string, threadId: string, messages: StoredMessage[]): Promise<void>;
   renameThread(userId: string, orgId: string, threadId: string, title: string): Promise<void>;

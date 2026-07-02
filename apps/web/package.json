@@ -20,6 +20,7 @@
     "@tanstack/ai-anthropic": "latest",
     "@tanstack/ai-openai": "latest",
     "@tanstack/ai-react": "latest",
+    "@tanstack/react-query": "^5.101.2",
     "@tanstack/react-router": "latest",
     "@tanstack/react-start": "latest",
     "@workos-inc/node": "^10.7.0",
@@ -37,8 +38,8 @@
     "tailwindcss": "4.3.2"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.1",
-    "@types/node": "^26.0.1",
+    "@biomejs/biome": "^2.5.2",
+    "@types/node": "^26.1.0",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

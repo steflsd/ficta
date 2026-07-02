@@ -79,6 +79,28 @@ export function createStorage(): Storage {
       };
     },
 
+    async startThread(userId, orgId, threadId, message) {
+      const db = await getDb();
+      await db.transaction(async (tx) => {
+        const [existing] = await tx.select().from(threads).where(eq(threads.id, threadId));
+        if (existing) {
+          // A thread id is client-generated; refuse to write into someone else's thread or workspace.
+          if (existing.userId !== userId || existing.orgId !== orgId) throw new Error("thread not found");
+          await tx.update(threads).set({ updatedAt: new Date() }).where(eq(threads.id, threadId));
+        } else {
+          await tx.insert(threads).values({ id: threadId, userId, orgId, title: deriveTitle([message]) });
+        }
+
+        await tx
+          .insert(messages)
+          .values({ id: message.id, threadId, role: message.role, parts: message.parts, orderIdx: 0 })
+          .onConflictDoUpdate({
+            target: messages.id,
+            set: { parts: message.parts, orderIdx: 0, role: message.role },
+          });
+      });
+    },
+
     async saveThreadSnapshot(userId, orgId, threadId, snapshot) {
       const db = await getDb();
       await db.transaction(async (tx) => {

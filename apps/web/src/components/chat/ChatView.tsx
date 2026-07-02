@@ -1,4 +1,5 @@
 import { fetchServerSentEvents, type UIMessage, useChat } from "@tanstack/ai-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { CreateWorkspaceDialog } from "@/components/onboarding/CreateWorkspaceDialog";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
@@ -13,13 +14,20 @@ import {
 } from "@/lib/file-attachments";
 import { MODELS, type ModelChoice } from "@/lib/models";
 import { uiToStored } from "@/lib/storage/messages";
-import { saveThread } from "@/lib/storage/threads";
-import { type InstanceSettings, isModelAllowed, modelKey, type UserSettings } from "@/lib/storage/types";
+import { invalidateThreads, threadKeys } from "@/lib/storage/threadQueries";
+import { saveThread, startThread } from "@/lib/storage/threads";
+import {
+  type InstanceSettings,
+  isModelAllowed,
+  modelKey,
+  type ThreadSummary,
+  type UserSettings,
+} from "@/lib/storage/types";
 import { useInstanceSettings } from "@/lib/storage/useInstanceSettings";
 import { useProtectionStatus } from "@/lib/use-protection-status";
 import { useSidebar } from "@/lib/use-sidebar";
 import { ChatSidebar } from "./ChatSidebar";
-import { Composer } from "./Composer";
+import { Composer, type ComposerHandle } from "./Composer";
 import { ErrorBanner } from "./ErrorBanner";
 import { MessageList } from "./MessageList";
 import { ProtectionNotice } from "./ProtectionNotice";
@@ -52,57 +60,96 @@ export function ChatView({
   threadId?: string;
   initialMessages?: UIMessage[];
 } = {}) {
+  const queryClient = useQueryClient();
   const instance = useInstanceSettings();
   const sidebar = useSidebar();
   const protectionStatus = useProtectionStatus();
+  const composerRef = useRef<ComposerHandle>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const [input, setInput] = useState("");
   const [model, setModel] = useState<ModelChoice>(() => initialModel(userSettings, instance));
   const [attachments, setAttachments] = useState<TextAttachment[]>([]);
   const [uploadWarning, setUploadWarning] = useState<string>();
+  const [activeThreadId, setActiveThreadId] = useState(threadId);
 
   // A new chat gets a stable id up front so its snapshot has a home before the first save.
   const tid = useMemo(() => threadId ?? crypto.randomUUID(), [threadId]);
+  const forwardedProps = useMemo(
+    () => ({ provider: model.provider, model: model.model }),
+    [model.provider, model.model],
+  );
 
   const { messages, sendMessage, isLoading, error, stop, reload, clear } = useChat({
     connection: fetchServerSentEvents("/api/chat"),
-    forwardedProps: { provider: model.provider, model: model.model },
+    forwardedProps,
     id: tid,
     threadId: tid,
     initialMessages,
-    onFinish: () => persist(),
+    onFinish: (message) => persist(message),
   });
 
   // Latest messages for the fire-and-forget save (onFinish fires outside React's render).
   const messagesRef = useRef<UIMessage[]>(messages);
   messagesRef.current = messages;
   const urlSynced = useRef(false);
+  const startingThread = useRef(false);
 
-  const persist = () => {
-    const snapshot = messagesRef.current;
+  const syncNewThreadUrl = () => {
+    if (threadId || urlSynced.current) return;
+    // Reflect the new thread without a navigation, which would re-run the loader and remount this component
+    // mid-session. A reload then lands on the thread route.
+    window.history.replaceState(null, "", `/chat/${tid}`);
+    urlSynced.current = true;
+    setActiveThreadId(tid);
+  };
+
+  const persistSnapshot = async (snapshot: UIMessage[]) => {
     if (snapshot.length === 0) return;
-    void saveThread({ data: { threadId: tid, messages: snapshot.map(uiToStored) } })
-      .then(() => {
-        // First save of a brand-new chat: reflect it in the URL without a navigation, which would
-        // re-run the loader and remount this component mid-session. A reload then lands on the thread.
-        if (!threadId && !urlSynced.current) {
-          window.history.replaceState(null, "", `/chat/${tid}`);
-          urlSynced.current = true;
-        }
-      })
-      .catch(() => {
-        // Persistence is best-effort; a failed save must never break the live chat.
-      });
+    queryClient.setQueryData<ThreadSummary[]>(threadKeys.all, (current) => upsertThreadSummary(current, tid, snapshot));
+    try {
+      await saveThread({ data: { threadId: tid, messages: snapshot.map(uiToStored) } });
+      void invalidateThreads(queryClient);
+    } catch (err) {
+      console.warn("Failed to save chat thread", err);
+      // Persistence is best-effort; a failed save must never break the live chat.
+    }
+  };
+
+  const startThreadNow = (message: UIMessage) => {
+    const snapshot = [...messagesRef.current, message];
+    // Show the new chat in the sidebar immediately, but don't touch URL/router or active-thread state while
+    // the first stream is starting; those visible navigation updates can disturb TanStack AI's first response.
+    queryClient.setQueryData<ThreadSummary[]>(threadKeys.all, (current) => upsertThreadSummary(current, tid, snapshot));
+    void startThread({ data: { threadId: tid, message: uiToStored(message) } }).catch((err) => {
+      console.warn("Failed to start chat thread", err);
+    });
+  };
+
+  const persist = (finishedMessage?: UIMessage) => {
+    const snapshot = snapshotWithFinishedMessage(messagesRef.current, finishedMessage);
+    syncNewThreadUrl();
+    void persistSnapshot(snapshot);
   };
 
   const send = (text: string) => {
     const trimmed = text.trim();
-    if ((!trimmed && attachments.length === 0) || isLoading) return;
-    sendMessage(messageWithAttachments(trimmed, attachments));
+    if ((!trimmed && attachments.length === 0) || isLoading || startingThread.current) return;
+    const content = messageWithAttachments(trimmed, attachments);
+    const startedMessage = messagesRef.current.length === 0 ? userMessage(content) : undefined;
     setInput("");
     setAttachments([]);
     setUploadWarning(undefined);
+
+    startingThread.current = true;
+    const sendPromise = sendMessage(content);
+    // `sendMessage()` awaits TanStack AI's internal onResponse hook before it starts `connection.send()`.
+    // A microtask can still run inside that gap, so schedule thread/sidebar/URL work as a macrotask to avoid
+    // perturbing the first stream startup path.
+    if (startedMessage) setTimeout(() => startThreadNow(startedMessage), 0);
+    void sendPromise.finally(() => {
+      startingThread.current = false;
+    });
   };
 
   const handleFilesSelected = async (files: File[]) => {
@@ -159,6 +206,7 @@ export function ChatView({
     setInput("");
     setAttachments([]);
     setUploadWarning(undefined);
+    requestAnimationFrame(() => composerRef.current?.focus());
   };
 
   return (
@@ -171,7 +219,7 @@ export function ChatView({
           onNewChat={resetChat}
           onOpenSettings={() => setSettingsOpen(true)}
           onCreateWorkspace={() => setCreateWorkspaceOpen(true)}
-          activeThreadId={threadId}
+          activeThreadId={activeThreadId}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -195,6 +243,7 @@ export function ChatView({
           <ProtectionNotice status={protectionStatus} />
 
           <Composer
+            ref={composerRef}
             value={input}
             onChange={setInput}
             onSubmit={() => send(input)}
@@ -202,6 +251,7 @@ export function ChatView({
             isLoading={isLoading}
             attachments={attachments}
             uploadWarning={uploadWarning}
+            autoFocus={!threadId && messages.length === 0}
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={(id) =>
               setAttachments((current) => current.filter((attachment) => attachment.id !== id))
@@ -215,6 +265,47 @@ export function ChatView({
       </div>
     </TooltipProvider>
   );
+}
+
+function userMessage(content: string): UIMessage {
+  return {
+    id: crypto.randomUUID(),
+    role: "user",
+    parts: [{ type: "text", content }],
+    createdAt: new Date(),
+  };
+}
+
+function snapshotWithFinishedMessage(messages: UIMessage[], finishedMessage: UIMessage | undefined): UIMessage[] {
+  if (!finishedMessage) return messages;
+  const existingIndex = messages.findIndex((message) => message.id === finishedMessage.id);
+  if (existingIndex === -1) return [...messages, finishedMessage];
+  return messages.map((message, index) => (index === existingIndex ? finishedMessage : message));
+}
+
+function upsertThreadSummary(
+  current: ThreadSummary[] | undefined,
+  threadId: string,
+  messages: UIMessage[],
+): ThreadSummary[] {
+  const now = new Date().toISOString();
+  const existing = current?.find((thread) => thread.id === threadId);
+  const summary: ThreadSummary = {
+    id: threadId,
+    title: existing?.title ?? deriveTitle(messages),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  return [summary, ...(current ?? []).filter((thread) => thread.id !== threadId)];
+}
+
+function deriveTitle(messages: UIMessage[]): string {
+  const firstUser = messages.find((message) => message.role === "user");
+  const text = firstUser?.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.content)
+    .join(" ");
+  return text?.replace(/\s+/g, " ").trim().slice(0, 80) || "New chat";
 }
 
 function messageWithAttachments(text: string, attachments: TextAttachment[]): string {

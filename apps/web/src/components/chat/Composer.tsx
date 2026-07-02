@@ -1,33 +1,34 @@
 import { AlertTriangle, ArrowUp, FileText, Paperclip, Square, X } from "lucide-react";
-import { useLayoutEffect, useRef } from "react";
+import { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { ATTACHMENT_ACCEPT, formatBytes, type TextAttachment } from "@/lib/file-attachments";
 
-export function Composer({
-  value,
-  onChange,
-  onSubmit,
-  onStop,
-  isLoading,
-  attachments,
-  uploadWarning,
-  onFilesSelected,
-  onRemoveAttachment,
-  onDismissUploadWarning,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
-  onStop: () => void;
-  isLoading: boolean;
-  attachments: TextAttachment[];
-  uploadWarning?: string;
-  onFilesSelected: (files: File[]) => void;
-  onRemoveAttachment: (id: string) => void;
-  onDismissUploadWarning: () => void;
-}) {
+export type ComposerHandle = {
+  focus: () => void;
+};
+
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
+  {
+    value,
+    onChange,
+    onSubmit,
+    onStop,
+    isLoading,
+    attachments,
+    uploadWarning,
+    autoFocus,
+    onFilesSelected,
+    onRemoveAttachment,
+    onDismissUploadWarning,
+  },
+  forwardedRef,
+) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useImperativeHandle(forwardedRef, () => ({
+    focus: () => ref.current?.focus(),
+  }));
 
   // Auto-grow: reset then match content, capped so it scrolls past a few lines. `value` isn't read in
   // the body but must stay in deps so the height recomputes on every edit (including programmatic clears).
@@ -38,6 +39,10 @@ export function Composer({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [value]);
+
+  useLayoutEffect(() => {
+    if (autoFocus) ref.current?.focus();
+  }, [autoFocus]);
 
   const canSend = (value.trim().length > 0 || attachments.length > 0) && !isLoading;
 
@@ -154,4 +159,18 @@ export function Composer({
       </div>
     </div>
   );
-}
+});
+
+type ComposerProps = {
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  onStop: () => void;
+  isLoading: boolean;
+  attachments: TextAttachment[];
+  uploadWarning?: string;
+  autoFocus?: boolean;
+  onFilesSelected: (files: File[]) => void;
+  onRemoveAttachment: (id: string) => void;
+  onDismissUploadWarning: () => void;
+};

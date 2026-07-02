@@ -1,5 +1,7 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import { createRootRoute, HeadContent, Outlet, redirect, Scripts } from "@tanstack/react-router";
 import { fetchAuthState } from "@/lib/auth/auth";
+import { getQueryClient } from "@/lib/query-client";
 import { fetchInstanceSettings } from "@/lib/storage/settings";
 import styles from "@/styles.css?url";
 
@@ -48,7 +50,9 @@ function RootDocument() {
         <HeadContent />
       </head>
       <body>
-        <Outlet />
+        <QueryClientProvider client={getQueryClient()}>
+          <Outlet />
+        </QueryClientProvider>
         <Scripts />
       </body>
     </html>

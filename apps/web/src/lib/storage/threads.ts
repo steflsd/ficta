@@ -36,6 +36,12 @@ function toStoredMessage(input: unknown): StoredMessage {
   };
 }
 
+function validateStart(input: unknown): { threadId: string; message: StoredMessage } {
+  const i = asObject(input);
+  if (typeof i.threadId !== "string" || !i.threadId) throw new Error("invalid threadId");
+  return { threadId: i.threadId, message: toStoredMessage(i.message) };
+}
+
 function validateSnapshot(input: unknown): { threadId: string; messages: StoredMessage[] } {
   const i = asObject(input);
   if (typeof i.threadId !== "string" || !i.threadId) throw new Error("invalid threadId");
@@ -60,6 +66,13 @@ export const fetchThread = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<{ thread: ThreadSummary; messages: StoredMessage[] } | null> => {
     const { userId, orgId } = await requireScope();
     return (await getStorage()).getThread(userId, orgId, data.threadId);
+  });
+
+export const startThread = createServerFn({ method: "POST" })
+  .validator(validateStart)
+  .handler(async ({ data }): Promise<void> => {
+    const { userId, orgId } = await requireScope();
+    await (await getStorage()).startThread(userId, orgId, data.threadId, data.message);
   });
 
 export const saveThread = createServerFn({ method: "POST" })
