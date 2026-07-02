@@ -5,6 +5,8 @@
 [registry]
 min_len = 8
 require = false
+# Exact env var names to leave unprotected after review, e.g. ["LOG_LEVEL"].
+exclude_names = []
 
 [registry.env_file]
 enabled = true
@@ -24,8 +26,35 @@ project = ""
 timeout_ms = 5000
 
 [redaction]
+# Registered exact-secret leaks fail closed by default.
 fail_closed = true
 redact_paths = false
+
+[detection]
+# Detector-backend outages default to fail-open (skip detection and forward).
+# This is separate from redaction.fail_closed, which covers registered exact-secret leaks.
+fail_closed = false
+
+[pii]
+# Web / standalone proxy PII detection. `ficta setup` prompts for this and defaults it on;
+# an unconfigured proxy remains off.
+enabled = true
+# Coding-agent launches stay off unless this is also true (or FICTA_PII_ENABLED is set for one run).
+agents = false
+# Exactly one backend runs: "regex" or "presidio".
+backend = "regex"
+# PII-specific detector-outage policy; overrides [detection] fail_closed.
+fail_closed = false
+
+[pii.presidio]
+# Used only when [pii] backend = "presidio". Presidio is a first-class supported backend,
+# but ficta does not manage the sidecar lifecycle; run presidio-analyzer separately (Docker is easiest locally).
+url = "http://127.0.0.1:5002"
+language = "en"
+score_threshold = 0.5
+entities = [] # empty = all entities returned by Presidio
+# Total detection budget per request.
+timeout_ms = 1500
 
 [logging]
 # Raw body logging is runtime-only (FICTA_LOG_LEVEL=trace); it is never persisted here.
@@ -39,7 +68,6 @@ log_dir = "~/.ficta/logs"
 # Runtime / diagnostics
 # [runtime]
 # port = 8787
-# quiet = false
 #
 # [upstreams]
 # anthropic = "https://api.anthropic.com"
