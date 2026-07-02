@@ -6,6 +6,7 @@ import {
   buildRegistryPolicy,
   type FictaPlugin,
   loadPluginRegistry,
+  parseUserExclusionRule,
   pluginConfigBindings,
   pluginConfigSections,
   pluginEnvDefaults,
@@ -14,6 +15,8 @@ import {
   registrySetupDefaults,
   registrySetupSources,
   resetPluginCachesForTests,
+  USER_EXCLUSION_PLUGIN,
+  USER_EXCLUSION_RULE_ID,
   validatePluginBoundaries,
 } from "../src/plugins/index.js";
 
@@ -22,6 +25,7 @@ const ENV_KEYS = [
   "FICTA_REGISTRY_ENV_FILE_ENABLED",
   "FICTA_REGISTRY_ENV_FILE_PATHS",
   "FICTA_REGISTRY_MIN_LEN",
+  "FICTA_REGISTRY_EXCLUDE_NAMES",
   "FICTA_REGISTRY_PROCESS_ENV_ENABLED",
   "FICTA_REGISTRY_PROCESS_ENV_MODE",
   "FICTA_REGISTRY_DOPPLER_ENABLED",
@@ -485,6 +489,58 @@ exit 64
     expect(protectedValueExcludedBy({ name: "FOO" }, untrusted)).toBeUndefined();
     // Diagnostics may still see untrusted rules via the explicit opt-in.
     expect(protectedValueExcludedBy({ name: "FOO" }, untrusted, { includeUntrusted: true })).toBeTruthy();
+  });
+});
+
+describe("user exclusion list", () => {
+  it("parses, dedupes, and sorts valid env names into a trusted rule", () => {
+    const { rule, invalidNames } = parseUserExclusionRule(" BETA , ALPHA ,ALPHA, ");
+    expect(invalidNames).toEqual([]);
+    expect(rule?.id).toBe(USER_EXCLUSION_RULE_ID);
+    expect(rule?.plugin).toBe(USER_EXCLUSION_PLUGIN);
+    expect(rule?.trusted).toBe(true);
+    expect(rule?.names).toEqual(["ALPHA", "BETA"]);
+  });
+
+  it("separates invalid entries and yields no rule when none are valid", () => {
+    const { rule, invalidNames } = parseUserExclusionRule("has space, 1LEADING, OK_NAME");
+    expect(rule?.names).toEqual(["OK_NAME"]);
+    expect(invalidNames).toEqual(["has space", "1LEADING"]);
+
+    const empty = parseUserExclusionRule("bad name, another bad");
+    expect(empty.rule).toBeUndefined();
+    expect(empty.invalidNames.length).toBe(2);
+  });
+
+  it("enforces the user rule at registry load and records safe excluded metadata", () => {
+    process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
+    process.env.FICTA_REGISTRY_MIN_LEN = "6";
+    process.env.FICTA_REGISTRY_EXCLUDE_NAMES = "AWS_KEY";
+
+    const snapshot = loadPluginRegistry();
+
+    expect(snapshot.values.some((v) => v.name === "AWS_KEY")).toBe(false);
+    expect(snapshot.policyExcluded).toBeGreaterThanOrEqual(1);
+    const dropped = snapshot.policyExcludedValues.find((d) => d.name === "AWS_KEY");
+    expect(dropped?.rule.plugin).toBe(USER_EXCLUSION_PLUGIN);
+    expect(dropped?.source).toBe("env-file");
+    // The user rule is first in the effective policy so overlaps attribute to the user.
+    expect(snapshot.registryPolicy.exclusions[0]?.id).toBe(USER_EXCLUSION_RULE_ID);
+    // Safe metadata only — never the underlying value.
+    expect(JSON.stringify(snapshot.policyExcludedValues)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+
+  it("reports invalid names as a non-blocking discovery, not an error", () => {
+    process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
+    process.env.FICTA_REGISTRY_MIN_LEN = "6";
+    process.env.FICTA_REGISTRY_EXCLUDE_NAMES = "not a name";
+
+    const snapshot = loadPluginRegistry();
+    const discovery = snapshot.discoveries.find((d) => d.id === "user-config/exclude-names");
+
+    expect(discovery?.status).toBe("available");
+    expect(discovery?.message).toContain("not a name");
+    expect(snapshot.discoveries.some((d) => d.status === "error")).toBe(false);
   });
 });
 

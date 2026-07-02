@@ -138,8 +138,9 @@ surrogate⇄value mappings in memory; upstream sees only opaque local tokens, no
 
 ### Never kept beyond the local session, never logged by default
 - Vault mappings are in-memory and are not intentionally written to disk or printed.
-- Raw body logging is opt-in (`FICTA_LOG_BODIES=1`) because raw request/response bodies can contain
-  real secrets. Leave it off for normal use.
+- Raw body logging is opt-in (`FICTA_LOG_LEVEL=trace`) because raw request/response bodies can contain
+  real secrets. It is runtime-only (never persisted to `config.toml`); leave the level at `info` or
+  below for normal use.
 - **Retention = agent session/proxy lifetime** in the shipped implementation: values remain in RAM
   long enough for deterministic multi-turn redaction/restore, then disappear when the wrapper exits.
 
@@ -160,9 +161,12 @@ native deps in the MVP.
 ## Phasing
 - **MVP:** Node/TS proxy; shared core; Anthropic + OpenAI adapters; reversible vault;
   non-streaming **and** streaming restore; fail-closed default; vitest suite.
-- **Possible later work:** optional detector plugins such as Presidio analyzer sidecars for
-  names/orgs/locations NER, plus user-defined custom patterns, allow/deny lists, and more
-  adapters. These should remain best-effort and secondary to the exact-match secret registry.
+- **Built:** the PII detector plugin with config-driven backends — the in-process `regex` backend
+  and an out-of-process Presidio analyzer sidecar (`presidio`) for names/orgs/locations NER, selected
+  via `[pii] backend` (`src/plugins/pii/`, see [`plugins.md`](./plugins.md)). Detection stays
+  best-effort and secondary to the exact-match secret registry.
+- **Possible later work:** user-defined custom patterns, allow/deny lists, and more adapters — also
+  best-effort and secondary to the exact-match secret registry.
 
 ## Layout
 

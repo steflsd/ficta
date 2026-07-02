@@ -38,9 +38,8 @@ describe("proxy hardening", () => {
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
       FICTA_REGISTRY_PROCESS_ENV_ENABLED: process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED,
       FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     const upstream = createServer((req, res) => {
@@ -64,9 +63,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
       process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "0";
       process.env.FICTA_REGISTRY_MIN_LEN = "6";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = logDir;
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -137,9 +135,8 @@ describe("proxy hardening", () => {
   it("fail-closes instead of forwarding registered numeric JSON primitives", async () => {
     const originalEnv = {
       FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let upstreamHit = false;
@@ -170,9 +167,8 @@ describe("proxy hardening", () => {
     try {
       const upstreamPort = await listen(upstream);
       process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0, plugins: [numericPlugin] });
@@ -209,9 +205,8 @@ describe("proxy hardening", () => {
       FICTA_REGISTRY_DOPPLER_ENABLED: process.env.FICTA_REGISTRY_DOPPLER_ENABLED,
       FICTA_REGISTRY_DOPPLER_COMMAND: process.env.FICTA_REGISTRY_DOPPLER_COMMAND,
       FICTA_REGISTRY_DOPPLER_CONFIGS: process.env.FICTA_REGISTRY_DOPPLER_CONFIGS,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     const fakeBin = mkdtempSync(join(tmpdir(), "ficta-fake-doppler-"));
@@ -245,9 +240,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "1";
       process.env.FICTA_REGISTRY_DOPPLER_COMMAND = fakeDoppler;
       process.env.FICTA_REGISTRY_DOPPLER_CONFIGS = "current";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -282,9 +276,8 @@ describe("proxy hardening", () => {
       FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
       FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let received = "";
@@ -308,9 +301,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
       process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
       process.env.FICTA_REGISTRY_MIN_LEN = "6";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -342,9 +334,8 @@ describe("proxy hardening", () => {
     const secret = "corova-control-plane";
     const originalEnv = {
       FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let received = "";
@@ -373,9 +364,8 @@ describe("proxy hardening", () => {
     try {
       const upstreamPort = await listen(upstream);
       process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({
@@ -424,9 +414,8 @@ describe("proxy hardening", () => {
     const secret = "corova-codex-backend-secret";
     const originalEnv = {
       FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let received = "";
@@ -453,9 +442,8 @@ describe("proxy hardening", () => {
     try {
       const upstreamPort = await listen(upstream);
       process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({
@@ -503,9 +491,8 @@ describe("proxy hardening", () => {
       FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
       FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let receivedUrl = "";
@@ -522,9 +509,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
       process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
       process.env.FICTA_REGISTRY_MIN_LEN = "6";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -554,9 +540,8 @@ describe("proxy hardening", () => {
     const secret = "secret value with spaces";
     const originalEnv = {
       FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let receivedUrl = "";
@@ -570,9 +555,8 @@ describe("proxy hardening", () => {
     try {
       const upstreamPort = await listen(upstream);
       process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({
@@ -620,9 +604,8 @@ describe("proxy hardening", () => {
       FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
       FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let receivedUrl = "";
@@ -639,9 +622,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
       process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
       process.env.FICTA_REGISTRY_MIN_LEN = "6";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -675,9 +657,8 @@ describe("proxy hardening", () => {
       FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
       FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let receivedHeader = "";
@@ -694,9 +675,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
       process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
       process.env.FICTA_REGISTRY_MIN_LEN = "6";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -729,9 +709,8 @@ describe("proxy hardening", () => {
       FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
       FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let received = "";
@@ -753,9 +732,8 @@ describe("proxy hardening", () => {
       const upstreamPort = await listen(upstream);
       process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
       process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({
@@ -804,9 +782,8 @@ describe("proxy hardening", () => {
       FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
       FICTA_REGISTRY_MIN_LEN: process.env.FICTA_REGISTRY_MIN_LEN,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     const binary = Buffer.from([0x00, 0xff, 0xfe, 0x41, 0x42, 0x80]);
@@ -822,9 +799,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
       process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
       process.env.FICTA_REGISTRY_MIN_LEN = "6";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -853,9 +829,8 @@ describe("proxy hardening", () => {
       FICTA_UPSTREAM: process.env.FICTA_UPSTREAM,
       FICTA_REGISTRY_ENV_FILE_ENABLED: process.env.FICTA_REGISTRY_ENV_FILE_ENABLED,
       FICTA_REGISTRY_ENV_FILE_PATHS: process.env.FICTA_REGISTRY_ENV_FILE_PATHS,
-      FICTA_LOG_BODIES: process.env.FICTA_LOG_BODIES,
+      FICTA_LOG_LEVEL: process.env.FICTA_LOG_LEVEL,
       FICTA_LOG_DIR: process.env.FICTA_LOG_DIR,
-      FICTA_SILENT: process.env.FICTA_SILENT,
     };
 
     let upstreamHits = 0;
@@ -871,9 +846,8 @@ describe("proxy hardening", () => {
       process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
       process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "1";
       process.env.FICTA_REGISTRY_ENV_FILE_PATHS = "test/fixtures/secrets.env";
-      process.env.FICTA_LOG_BODIES = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
       process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-test-"));
-      process.env.FICTA_SILENT = "1";
 
       const { startProxy } = await import("../src/server.js");
       proxy = await startProxy({ port: 0 });
@@ -888,6 +862,150 @@ describe("proxy hardening", () => {
       proxy?.close();
       await close(upstream);
       for (const [k, v] of Object.entries(originalEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+});
+
+describe("pii fail-closed backend", () => {
+  const PII_ENV = [
+    "FICTA_UPSTREAM",
+    "FICTA_REGISTRY_ENV_FILE_ENABLED",
+    "FICTA_REGISTRY_PROCESS_ENV_ENABLED",
+    "FICTA_REGISTRY_DOPPLER_ENABLED",
+    "FICTA_LOG_LEVEL",
+    "FICTA_LOG_DIR",
+    "FICTA_SURROGATE_KEY",
+    "FICTA_PII_ENABLED",
+    "FICTA_PII_BACKEND",
+    "FICTA_PII_FAIL_CLOSED",
+    "FICTA_FAIL_CLOSED_DETECTION",
+    "FICTA_PII_PRESIDIO_URL",
+    "FICTA_PII_PRESIDIO_TIMEOUT_MS",
+  ] as const;
+
+  it("reports Presidio outage and fail-open/closed posture via status", async () => {
+    const original = Object.fromEntries(PII_ENV.map((k) => [k, process.env[k]]));
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      // A bound-then-released port refuses connections → presidio backend is "down".
+      const dead = createServer();
+      const deadPort = await listen(dead);
+      await close(dead);
+
+      process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+      process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "0";
+      process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
+      process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-status-"));
+      process.env.FICTA_PII_ENABLED = "1";
+      process.env.FICTA_PII_BACKEND = "presidio";
+      process.env.FICTA_PII_FAIL_CLOSED = "0";
+      process.env.FICTA_PII_PRESIDIO_URL = `http://127.0.0.1:${deadPort}`;
+      process.env.FICTA_PII_PRESIDIO_TIMEOUT_MS = "300";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({ port: 0 });
+
+      const failOpen = await fetch(`http://127.0.0.1:${proxy.port}/__ficta/status`);
+      const openBody = await failOpen.json();
+      expect(failOpen.status).toBe(200);
+      expect(openBody).toMatchObject({
+        ok: true,
+        service: "ficta",
+        protection: { protecting: true },
+        pii: { enabled: true, backend: "presidio", status: "degraded", failureMode: "fail-open" },
+      });
+      expect(openBody.pii.message).toContain("fail-open");
+
+      process.env.FICTA_PII_FAIL_CLOSED = "1";
+      const failClosed = await fetch(`http://127.0.0.1:${proxy.port}/__ficta/status`);
+      const closedBody = await failClosed.json();
+      expect(closedBody).toMatchObject({
+        pii: { enabled: true, backend: "presidio", status: "blocking", failureMode: "fail-closed" },
+      });
+      expect(closedBody.pii.message).toContain("fail-closed");
+    } finally {
+      proxy?.close();
+      for (const [k, v] of Object.entries(original)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("blocks with 503 when presidio is down and fail_closed is set, forwards when fail-open", async () => {
+    const original = Object.fromEntries(PII_ENV.map((k) => [k, process.env[k]]));
+    let upstreamHits = 0;
+    const upstream = createServer((req, res) => {
+      upstreamHits++;
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(body);
+      });
+    });
+
+    let proxy: Awaited<ReturnType<typeof import("../src/server.js")["startProxy"]>> | undefined;
+    try {
+      const upstreamPort = await listen(upstream);
+      // A bound-then-released port refuses connections → presidio backend is "down".
+      const dead = createServer();
+      const deadPort = await listen(dead);
+      await close(dead);
+
+      process.env.FICTA_UPSTREAM = `http://127.0.0.1:${upstreamPort}`;
+      process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+      process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "0";
+      process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "0";
+      process.env.FICTA_LOG_LEVEL = "silent";
+      process.env.FICTA_LOG_DIR = mkdtempSync(join(tmpdir(), "ficta-pii-failclosed-"));
+      process.env.FICTA_SURROGATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+      process.env.FICTA_PII_ENABLED = "1";
+      process.env.FICTA_PII_BACKEND = "presidio";
+      process.env.FICTA_PII_FAIL_CLOSED = "1";
+      process.env.FICTA_PII_PRESIDIO_URL = `http://127.0.0.1:${deadPort}`;
+      process.env.FICTA_PII_PRESIDIO_TIMEOUT_MS = "300";
+
+      const { startProxy } = await import("../src/server.js");
+      proxy = await startProxy({ port: 0 });
+
+      const send = () =>
+        fetch(`http://127.0.0.1:${proxy?.port}/v1/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-x", messages: [{ role: "user", content: "Reply to Jane Doe" }] }),
+        });
+
+      // fail-closed: the gateway can't screen the body, so it refuses to forward.
+      const blocked = await send();
+      expect(blocked.status).toBe(503);
+      expect((await blocked.json()).error.type).toBe("ficta_blocked");
+      expect(upstreamHits).toBe(0);
+
+      // flip to fail-open (default): the same down backend now skips detection and forwards.
+      process.env.FICTA_PII_FAIL_CLOSED = "0";
+      const forwarded = await send();
+      expect(forwarded.status).toBe(200);
+      await forwarded.text();
+      expect(upstreamHits).toBe(1);
+
+      // global default alone (no per-plugin override) also blocks — core-enforced.
+      delete process.env.FICTA_PII_FAIL_CLOSED;
+      process.env.FICTA_FAIL_CLOSED_DETECTION = "1";
+      const globalBlocked = await send();
+      expect(globalBlocked.status).toBe(503);
+      expect(upstreamHits).toBe(1); // unchanged — not forwarded
+    } finally {
+      proxy?.close();
+      await close(upstream);
+      for (const [k, v] of Object.entries(original)) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }

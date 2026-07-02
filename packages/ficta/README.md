@@ -49,7 +49,6 @@ every option. The table below is just a quick tour of the most useful knobs:
 | `registry.process_env.mode` | `FICTA_REGISTRY_PROCESS_ENV_MODE` | `secret-ish` | `secret-ish` name-matching or `all` process env. |
 | `redaction.fail_closed` | `FICTA_FAIL_CLOSED` | `true` | Block a request if a protected value survives redaction. |
 | `redaction.redact_paths` | `FICTA_REDACT_PATHS` | `false` | Also redact filesystem-path-like tokens. |
-| `logging.log_bodies` | `FICTA_LOG_BODIES` | `false` | Log raw request/response bodies (off by default). |
 | `logging.log_dir` | `FICTA_LOG_DIR` | `~/.ficta/logs` | Where per-run logs and `stats.json` are written. |
 | `upstreams.anthropic` | `FICTA_ANTHROPIC_UPSTREAM` | Anthropic API | Override the Anthropic upstream (also `..._OPENAI_...` / `..._CHATGPT_...`). |
 
@@ -62,9 +61,16 @@ per-source options (Doppler `configs` / `project` / `timeout_ms`, etc.).
 ```sh
 FICTA_REQUIRE_REGISTRY=1 claude   # refuse to launch if nothing loads
 FICTA_REDACT_PATHS=1 claude       # also redact path-like tokens this run
+FICTA_LOG_LEVEL=trace claude      # verbose logs incl. raw bodies (debug only)
 FICTA_DISABLE=1 claude            # bypass an installed shim once
 ficta disable                     # bypass all shims until `ficta enable`
 ```
+
+`FICTA_LOG_LEVEL` (`silent` < `error` < `warn` < `info` < `debug` < `trace`; default `info`
+standalone, `silent` under a wrapped agent) is runtime-only by design and is **not** persisted to
+`config.toml` — `trace` writes raw request/response bodies to disk, so it must be an explicit
+per-run choice, never a saved default. Under wrapped agents, leave it unset/`silent` to keep TUIs
+clean; set `info`/`debug`/`trace` only when you intentionally want proxy logs in the terminal.
 
 ## Commands
 

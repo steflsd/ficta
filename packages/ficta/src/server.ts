@@ -4,18 +4,30 @@ import { argv } from "node:process";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { type Context, Hono } from "hono";
-import { type Config, loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
+import { loadConfig, resolveTarget, upstreamPolicyIssue } from "./config.js";
+import { detectorFailClosed } from "./detection-policy.js";
 import { ProtectionEngine } from "./engine.js";
 import { logRequest, logResponse, runDir } from "./log.js";
+import { log } from "./logger.js";
 import {
+  activeBackend,
+  checkPresidioHealth,
   type FictaPlugin,
   type PluginDiscovery,
+  piiEnabled,
+  piiFailClosed,
   type RegistryPolicy,
   registryDiscoveryLines,
   registryPolicyLines,
+  selectedBackendName,
 } from "./plugins/index.js";
 import { ProtectionStats, type ProtectionStatsSnapshot, type ProtectionSurface } from "./protection-stats.js";
-import type { ProtectionHit, RedactionEngine, RequestScope } from "./redaction-engine.js";
+import {
+  DetectorUnavailableError,
+  type ProtectionHit,
+  type RedactionEngine,
+  type RequestScope,
+} from "./redaction-engine.js";
 import { surrogateKeyWarning } from "./vault.js";
 import { type Wire, wireOf } from "./wire.js";
 
@@ -44,6 +56,7 @@ export async function startProxy(
   app.all("*", async (c) => {
     const url = new URL(c.req.url);
     if (url.pathname === HEALTH_PATH) return c.json({ ok: true, service: "ficta" });
+    if (url.pathname === STATUS_PATH) return c.json(await protectionStatus(engine));
 
     // Protect every outbound request body, query string, and non-auth header by default.
     // Provider/client paths change, and an "unknown" route can still carry conversation/tool
@@ -73,7 +86,7 @@ export async function startProxy(
           redaction,
           blocked: true,
         });
-        return blockedLeakResponse(c, cfg, "query string", redaction.leaks);
+        return blockedLeakResponse(c, "query string", redaction.leaks);
       }
       if (redaction.count > 0) searchToSend = redactedSearch;
     }
@@ -110,7 +123,15 @@ export async function startProxy(
       n = logRequest({ method, path: url.pathname, body: bodyText, target, route });
 
       if (protect) {
-        const redaction = await scope.redactBodyDetailed(bodyText, { path: url.pathname });
+        let redaction: Awaited<ReturnType<typeof scope.redactBodyDetailed>>;
+        try {
+          redaction = await scope.redactBodyDetailed(bodyText, { path: url.pathname });
+        } catch (err) {
+          // A fail-closed detector (e.g. Presidio required but unreachable) refuses the request rather
+          // than forwarding data it could not screen. The raw body has not left the process.
+          if (err instanceof DetectorUnavailableError) return blockedDetectionResponse(c, err.plugin, n);
+          throw err;
+        }
         const redacted = redaction.body;
         requestModel = safeRequestModel(scope, originalModel, requestModelFromBody(redacted));
         if (queryRedaction) {
@@ -138,7 +159,7 @@ export async function startProxy(
             redaction,
             blocked: true,
           });
-          return blockedLeakResponse(c, cfg, "body", redaction.leaks, n);
+          return blockedLeakResponse(c, "body", redaction.leaks, n);
         }
         if (redaction.count > 0 || redaction.leaks > 0) {
           recordProtection(stats, scope, {
@@ -152,9 +173,12 @@ export async function startProxy(
             redaction,
             blocked: false,
           });
-          if (redaction.count > 0 && !cfg.silent) {
+          if (redaction.count > 0) {
             const warn = redaction.leaks > 0 ? `  ⚠ ${redaction.leaks} LEAKED (fail-open)` : "";
-            console.log(`🔒 ficta #${n} — kept ${redaction.count} body value(s) out of the model${warn}`);
+            const fields = { reqId: n, kept: redaction.count, leaked: redaction.leaks, surface: "body" };
+            const msg = `🔒 kept ${redaction.count} body value(s) out of the model${warn}`;
+            if (redaction.leaks > 0) log.warn(fields, msg);
+            else log.info(fields, msg);
           }
         }
         bodyToSend = redacted;
@@ -193,7 +217,7 @@ export async function startProxy(
           redaction,
           blocked: true,
         });
-        return blockedLeakResponse(c, cfg, "headers", redaction.leaks, n);
+        return blockedLeakResponse(c, "headers", redaction.leaks, n);
       }
       if (redaction.count > 0 || redaction.leaks > 0) {
         recordProtection(stats, scope, {
@@ -207,9 +231,12 @@ export async function startProxy(
           redaction,
           blocked: false,
         });
-        if (redaction.count > 0 && !cfg.silent) {
+        if (redaction.count > 0) {
           const warn = redaction.leaks > 0 ? `  ⚠ ${redaction.leaks} LEAKED (fail-open)` : "";
-          console.log(`🔒 ficta #${n} — kept ${redaction.count} non-auth header value(s) out of the model${warn}`);
+          const fields = { reqId: n, kept: redaction.count, leaked: redaction.leaks, surface: "non-auth headers" };
+          const msg = `🔒 kept ${redaction.count} non-auth header value(s) out of the model${warn}`;
+          if (redaction.leaks > 0) log.warn(fields, msg);
+          else log.info(fields, msg);
         }
       }
     }
@@ -218,7 +245,7 @@ export async function startProxy(
     try {
       upstreamRes = await fetch(target, { method, headers, body: bodyToSend });
     } catch (err) {
-      if (!cfg.silent) console.error(`✗ #${n} upstream fetch failed:`, (err as Error).message);
+      log.error({ reqId: n, err: (err as Error).message }, `✗ upstream fetch failed: ${(err as Error).message}`);
       return c.json({ error: { type: "ficta_upstream_error", message: String(err) } }, 502);
     }
 
@@ -243,8 +270,8 @@ export async function startProxy(
     // fires inline the moment restore has run. Zero restores (the common case) stay quiet.
     const logRestore = () => {
       const restored = scope.restoredCount;
-      if (restored > 0 && !cfg.silent) {
-        console.log(`♻️ ficta #${n} — restored ${restored} value(s) in response`);
+      if (restored > 0) {
+        log.info({ reqId: n, restored }, `♻️ restored ${restored} value(s) in response`);
       }
     };
 
@@ -298,36 +325,33 @@ export async function startProxy(
   const clientHost = bindHost === "0.0.0.0" || bindHost === "::" ? "127.0.0.1" : bindHost;
   return new Promise<ProxyHandle>((resolve) => {
     const server = serve({ fetch: app.fetch, port: opts.port ?? cfg.port, hostname: bindHost }, (info) => {
-      if (!cfg.silent) {
-        const keyWarning = surrogateKeyWarning();
-        console.log(`\n  ficta — protection proxy`);
-        console.log(`  listening      http://${bindHost}:${info.port}`);
-        console.log(`  anthropic ⇒    ${cfg.upstreams.anthropic}`);
-        console.log(`  openai    ⇒    ${cfg.upstreams.openai}`);
-        console.log(`  chatgpt   ⇒    ${cfg.upstreams.chatgpt}  (Codex OAuth)`);
-        console.log(
-          `  vault          ${engine.size} known value(s)  ${engine.protecting ? "🔒 redacting up, restoring back" : "⚠ NONE loaded — passthrough"}`,
-        );
-        console.log(`  registry`);
-        for (const line of registryDiscoveryLines(
-          engine.registry.discoveries,
-          "    ",
-          engine.registry.policyExcludedBySource,
-        )) {
-          console.log(line);
-        }
-        const policyLines = registryPolicyLines(engine.registry.registryPolicy, "    ");
-        if (policyLines.length > 0) {
-          console.log(`  registry policy exclusions`);
-          for (const line of policyLines) console.log(line);
-        }
-        if (keyWarning) console.log(`  key warning    ${keyWarning}`);
-        console.log(`  fail-closed    ${cfg.failClosed ? "on" : "OFF (fail-open)"}`);
-        console.log(`  run logs       ${runDir}${cfg.logBodies ? "  ⚠ raw bodies on" : ""}\n`);
-        console.log(`  point a client at it:`);
-        console.log(`    ANTHROPIC_BASE_URL=http://${clientHost}:${info.port} claude`);
-        console.log(`    (or use the wrapper:  ficta claude  /  ficta codex  /  ficta pi)\n`);
+      const keyWarning = surrogateKeyWarning();
+      log.info(
+        {
+          url: `http://${bindHost}:${info.port}`,
+          clientBaseUrl: `http://${clientHost}:${info.port}`,
+          upstreams: cfg.upstreams,
+          vault: engine.size,
+          failClosed: cfg.failClosed,
+          runDir,
+          rawBodies: cfg.logBodies,
+        },
+        engine.protecting
+          ? `🔒 ficta listening on http://${bindHost}:${info.port} — ${engine.size} value(s), redacting up / restoring back`
+          : `⚠ ficta listening on http://${bindHost}:${info.port} — NONE loaded, passthrough`,
+      );
+      // Per-source discovery + policy detail is the old --ficta-verbose report; keep it at debug.
+      for (const line of registryDiscoveryLines(
+        engine.registry.discoveries,
+        "",
+        engine.registry.policyExcludedBySource,
+      )) {
+        log.debug({}, line.trim());
       }
+      for (const line of registryPolicyLines(engine.registry.registryPolicy, "")) {
+        log.debug({}, `registry policy exclusion: ${line.trim()}`);
+      }
+      if (keyWarning) log.warn({}, `key warning: ${keyWarning}`);
       resolve({
         port: info.port,
         protectedValues: engine.size,
@@ -360,7 +384,95 @@ function scopeKeyFrom(_c: Context): string | undefined {
   return undefined;
 }
 
+/** Safe runtime status for first-party UIs. Contains only counts/config/health metadata — never values. */
+async function protectionStatus(engine: RedactionEngine) {
+  const enabled = piiEnabled();
+  const configuredBackend = selectedBackendName();
+  const backend = activeBackend();
+  const failClosed = detectorFailClosed(piiFailClosed());
+  const failureMode = failClosed ? "fail-closed" : "fail-open";
+
+  let pii: {
+    enabled: boolean;
+    configuredBackend: string;
+    backend: string;
+    status: "off" | "ok" | "degraded" | "blocking";
+    failureMode: "fail-open" | "fail-closed";
+    url?: string;
+    detail?: string;
+    message: string;
+  };
+
+  if (!enabled) {
+    pii = {
+      enabled,
+      configuredBackend,
+      backend: backend.name,
+      status: "off",
+      failureMode,
+      message: "PII detection is off; only registered exact values are protected.",
+    };
+  } else if (backend.unknown) {
+    pii = {
+      enabled,
+      configuredBackend,
+      backend: backend.name,
+      status: "degraded",
+      failureMode,
+      message: `Unknown PII backend "${backend.unknown}" is configured; using the built-in regex backend instead.`,
+    };
+  } else if (backend.name === "presidio") {
+    const health = await checkPresidioHealth();
+    if (health.ok) {
+      pii = {
+        enabled,
+        configuredBackend,
+        backend: backend.name,
+        status: "ok",
+        failureMode,
+        url: health.url,
+        message: `Presidio is reachable at ${health.url}; PII detection is active.`,
+      };
+    } else {
+      pii = {
+        enabled,
+        configuredBackend,
+        backend: backend.name,
+        status: failClosed ? "blocking" : "degraded",
+        failureMode,
+        url: health.url,
+        ...(health.detail ? { detail: health.detail } : {}),
+        message: failClosed
+          ? `Presidio is unreachable at ${health.url}; fail-closed is active, so requests will be blocked before reaching the model.`
+          : `Presidio is unreachable at ${health.url}; fail-open is active, so requests are forwarded without Presidio PII screening.`,
+      };
+    }
+  } else {
+    pii = {
+      enabled,
+      configuredBackend,
+      backend: backend.name,
+      status: "ok",
+      failureMode,
+      message: `PII detection is active with the ${backend.name} backend.`,
+    };
+  }
+
+  return {
+    ok: true,
+    service: "ficta",
+    protection: {
+      enabled: engine.enabled,
+      protecting: engine.protecting,
+      registeredValues: engine.size,
+      policyExcluded: engine.registry.policyExcluded,
+    },
+    pii,
+  };
+}
+
 const HEALTH_PATH = "/__ficta/health";
+const STATUS_PATH = "/__ficta/status";
 const REQUIRED_AUTH_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "cookie"]);
 const SURROGATE_RE = /FICTA_[0-9a-f]{32}/;
 
@@ -459,13 +571,11 @@ function decodeQueryComponent(value: string): string {
 }
 
 /** Single fail-closed 403 builder so the query/body/header surfaces stay in lockstep. */
-function blockedLeakResponse(c: Context, cfg: Config, surface: string, leaks: number, n?: number): Response {
-  if (!cfg.silent) {
-    const id = n === undefined ? "" : ` #${n}`;
-    console.error(
-      `🛑 ficta${id} BLOCKED — ${leaks} registered value(s) survived ${surface} redaction; refusing to forward`,
-    );
-  }
+function blockedLeakResponse(c: Context, surface: string, leaks: number, n?: number): Response {
+  log.error(
+    { reqId: n, leaks, surface },
+    `🛑 BLOCKED — ${leaks} registered value(s) survived ${surface} redaction; refusing to forward`,
+  );
   return c.json(
     {
       error: {
@@ -474,6 +584,23 @@ function blockedLeakResponse(c: Context, cfg: Config, surface: string, leaks: nu
       },
     },
     403,
+  );
+}
+
+/** Fail-closed 503 for a detector outage: core resolved this detector's policy as blocking. */
+function blockedDetectionResponse(c: Context, plugin: string, n?: number): Response {
+  log.error(
+    { reqId: n, plugin },
+    `🛑 BLOCKED — detector "${plugin}" is unavailable and fail-closed is in effect; refusing to forward`,
+  );
+  return c.json(
+    {
+      error: {
+        type: "ficta_blocked",
+        message: `ficta refused to forward: detector "${plugin}" is unavailable and fail-closed is in effect`,
+      },
+    },
+    503,
   );
 }
 

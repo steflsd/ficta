@@ -10,7 +10,9 @@ the PII detector.
 clean, tarball file list unchanged).
 **Pilot polish 2026-07-01** — PII default-on in `ficta setup`, `active` discovery status, and the
 symmetric restore-count log line (verified: 133 tests green, Biome clean). See "Pilot polish" below.
-Remaining: **automated loopback E2E** (needed), **#7** (optional).
+**Loopback E2E 2026-07-02** — CI-safe PII round-trip through the real proxy handler landed
+(`test/loopback-pii.test.ts`); verified: 156 tests green, Biome clean. **#7** resolved (Presidio
+landed, dedup kept). Remaining before the gateway is real: **live E2E run** (user-driven, real key).
 
 > Path note: the review referenced both `src/…` and `packages/ficta/src/…` because the diff
 > includes the migration rename. Current path is `packages/ficta/src/…`.
@@ -19,18 +21,11 @@ Remaining: **automated loopback E2E** (needed), **#7** (optional).
 
 ## Open — matters before the gateway is real
 
-- [ ] **Automated loopback E2E (CI-safe, no key, no external call).** Fake upstream via
-  `FICTA_UPSTREAM` (pattern in `test/server.test.ts`): send a body with synthetic name/SSN → assert
-  the fake upstream received **tokens** (no PII on the wire) and that a token in its reply is
-  **restored** in the client-facing response. Should also assert the new `scope.restoredCount` /
-  `♻️` accounting. This is the CI proof that the redact→restore round-trip holds through the real
-  proxy handler, not just the engine unit path.
-
-## Optional cleanup
-
-- [ ] **7. Redundant plugin-level `seen` dedup.** `packages/ficta/src/plugins/pii/index.ts`
-  — recognizer and vault already dedup. Mildly defensible once a 2nd recognizer (Presidio) exists,
-  so decide when wiring the async recognizer.
+- [ ] **Live E2E run (user-driven, real key, outward-facing).** `cp apps/web/.env.example
+  apps/web/.env`, add a real OpenAI/Anthropic key, `FICTA_PII_ENABLED=1 pnpm dev`, paste **fake**
+  PII in the UI at `http://localhost:4747` → confirm the answer streams back with restored values and
+  the missing-key path shows a graceful error. Deliberately separate from CI (sends the fake content
+  to a real vendor); run after the loopback + units are green (they are).
 
 ---
 
@@ -99,8 +94,6 @@ Refinements on top of the request-scoped pass, from proving the feature end-to-e
   ships in this change; comment now points at `pii/index.ts`.
 
 ## Suggested next sequencing
-1. **Automated loopback E2E** — the CI-safe round-trip proof (see Open). Do this before the live run
-   so the wiring is verified without a key or an external call.
-2. **Live E2E** — the outward-facing single-user pilot run with a real key (see plan); sends fake
-   content to a real vendor, so it's a deliberate separate step.
-3. **#7** optional dedup cleanup — decide when wiring the async (Presidio) recognizer.
+
+1. **Live E2E** — the outward-facing single-user pilot run with a real key; sends fake content to a
+   real vendor, so it's a deliberate separate step.

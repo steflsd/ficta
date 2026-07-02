@@ -6,8 +6,11 @@ const CORE_DEFAULTS = {
   FICTA_REGISTRY_MIN_LEN: "8",
   FICTA_REQUIRE_REGISTRY: "0",
   FICTA_FAIL_CLOSED: "1",
+  // Global default for *detector* outages (best-effort detection can't run) — off, so a down backend
+  // degrades to no detection rather than blocking. Distinct from FICTA_FAIL_CLOSED (registered-secret
+  // leaks, default on). A detector's own [<plugin>] fail_closed overrides this.
+  FICTA_FAIL_CLOSED_DETECTION: "0",
   FICTA_REDACT_PATHS: "0",
-  FICTA_LOG_BODIES: "0",
   FICTA_LOG_MAX_BYTES: String(256 * 1024),
   FICTA_ALLOW_CUSTOM_UPSTREAM: "0",
 } as const;

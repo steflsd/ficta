@@ -1,6 +1,10 @@
 import { chat, toServerSentEventsResponse } from "@tanstack/ai";
 import { createFileRoute } from "@tanstack/react-router";
+import { scopeFromAuth } from "../../lib/auth/guards.server";
+import { getActiveProvider } from "../../lib/auth/provider.server";
 import { createModelAdapter, MissingKeyError, type Provider } from "../../lib/model-adapter";
+import { getStorage } from "../../lib/storage/storage.server";
+import { isModelAllowed } from "../../lib/storage/types";
 
 const PROVIDERS: readonly Provider[] = ["openai", "anthropic"];
 
@@ -19,6 +23,12 @@ export const Route = createFileRoute("/api/chat")({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        // Defense in depth: even though the UI is gated, verify the session here — this is the route
+        // that spends API keys. In `none` mode requiresAuth is false, so this is a no-op.
+        const auth = await (await getActiveProvider()).getAuthState();
+        const scope = scopeFromAuth(auth);
+        if (auth.requiresAuth && !scope) return errorResponse(401, "sign in to chat");
+
         let provider: Provider;
         let model: string;
         let messages: Parameters<typeof chat>[0]["messages"];
@@ -31,6 +41,13 @@ export const Route = createFileRoute("/api/chat")({
           if (!model) throw new Error("no model selected");
         } catch (err) {
           return errorResponse(400, reason(err, "malformed chat request"));
+        }
+
+        // Enforce the instance allow-list server-side — the picker filters for UX, but this is the gate
+        // that actually spends keys, so a forged request for a disabled model is rejected here.
+        const instance = await (await getStorage()).getInstanceSettings(scope?.orgId ?? "local");
+        if (!isModelAllowed(instance, `${provider}/${model}`)) {
+          return errorResponse(403, "model not enabled on this instance");
         }
 
         let stream: ReturnType<typeof chat>;

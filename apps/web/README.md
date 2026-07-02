@@ -22,38 +22,43 @@ browser (useChat)
 
 1. From the repo root: `pnpm install` (installs this app's deps too — it's a workspace member).
 2. **Provide config + model API keys.** Values are read server-side only (never sent to the browser)
-   and can come from Doppler *or* a `.env` file — see below. The server needs `OPENAI_API_KEY` and/or
-   `ANTHROPIC_API_KEY`; the proxy reads `FICTA_PROXY_URL` and `FICTA_PII_ENABLED`.
+   and can come from Doppler *or* a `.env` file. The server needs `OPENAI_API_KEY` and/or
+   `ANTHROPIC_API_KEY`; the UI reads `FICTA_PROXY_URL`, and the proxy reads `FICTA_PII_ENABLED`.
 
-   **Recommended — Doppler** (`process.env` is populated by `doppler run`). Put `OPENAI_API_KEY` /
-   `ANTHROPIC_API_KEY` — and, so no inline flags are needed, `FICTA_PROXY_URL` and `FICTA_PII_ENABLED`
-   — in your Doppler config, then run both the proxy and UI from the repo root:
+   `pnpm dev` is the single repo-root entrypoint. It runs `scripts/dev.mjs`, which uses
+   `doppler run -- pnpm dev:all` when Doppler project/config metadata is detected, otherwise loads
+   local `.env` files and runs `pnpm dev:all` without Doppler.
 
    ```sh
-   pnpm dev:doppler          # = doppler run -- pnpm dev:all
+   pnpm dev                 # auto: Doppler when configured, otherwise local .env
+   pnpm dev -- --doppler    # force Doppler
+   pnpm dev -- --no-doppler # force local .env
    ```
 
-   **Fallback — `.env`** (no Doppler): copy the example and fill it in:
+   For local `.env` fallback, copy the example and fill it in:
 
    ```sh
    cp apps/web/.env.example apps/web/.env
    # then edit apps/web/.env and set OPENAI_API_KEY and/or ANTHROPIC_API_KEY
-   pnpm dev:all
+   pnpm dev
    ```
 
-   Then open http://localhost:3000. (`pnpm dev` alone is the proxy only; `pnpm web:dev` is the UI only.)
+   Then open http://localhost:4747. (`pnpm dev:proxy` is the proxy only; `pnpm web:dev` is the UI only.)
 
-**Precedence:** `vite.config.ts` loads `apps/web/.env` only as a *fallback* — it sets a key only when
-`process.env` doesn't already have it. So Doppler-injected (or any shell-exported) values win, and
-`.env` fills whatever Doppler didn't set. You can mix the two.
+   This dev flow is the **web-UI** path. The coding agents don't need it — `ficta claude|codex|pi`
+   starts its own ephemeral proxy per launch (see
+   [`packages/ficta/docs/install.md`](../../packages/ficta/docs/install.md)).
+
+**Precedence:** shell-exported and Doppler-injected values win. `scripts/dev.mjs` loads local `.env`
+files only as fallback before launching the proxy + UI; `vite.config.ts` keeps loading
+`apps/web/.env` as the same fallback when `pnpm web:dev` is run directly.
 
 **PII redaction** is toggled by `FICTA_PII_ENABLED`, read by the **proxy** process (not the UI). Its
 durable home is the proxy's own config: `ficta setup` **defaults this to on** and persists `[pii]
 enabled = true` to `~/.ficta/config.toml` (see
 [`packages/ficta/docs/plugins.md`](../../packages/ficta/docs/plugins.md)). Note the two defaults — an
 *unconfigured* proxy is off, but running the wizard turns it on. For a one-off instead, pass it
-inline: `FICTA_PII_ENABLED=1 doppler run -- pnpm dev:all` (or `FICTA_PII_ENABLED=1 pnpm dev:all`
-without Doppler); `FICTA_PII_ENABLED=0` forces it off.
+inline: `FICTA_PII_ENABLED=1 pnpm dev`; `FICTA_PII_ENABLED=0` forces it off.
 
 > The ficta proxy also loads secrets to redact from the same Doppler context via its own Doppler
 > registry plugin (`packages/ficta/src/plugins/doppler.ts`), so running under `doppler run` feeds both

@@ -18,6 +18,8 @@ export interface StartupBannerOptions {
   policyExcludedBySource?: Record<string, number>;
   /** Effective registry policy, for the verbose exclusion breakdown. */
   registryPolicy?: RegistryPolicy;
+  /** Resolved PII detector outage policy, for the posture note on the pii line (only shown when active). */
+  piiFailClosed?: boolean;
   verbose?: boolean;
 }
 
@@ -27,21 +29,30 @@ interface SourceSummaryItem {
   excluded: number;
 }
 
+export function shouldPrintStartupDiagnostics(opts: { verbose: boolean; stderrIsTTY?: boolean }): boolean {
+  // Full-screen agent TUIs (notably Claude Code) can repaint over text emitted immediately before
+  // spawn. Keep interactive launches clean by default, but preserve diagnostics for logs/pipes and
+  // explicit debug runs.
+  return opts.verbose || opts.stderrIsTTY !== true;
+}
+
 export function renderStartupBanner(opts: StartupBannerOptions): string {
   const excludedBySource = opts.policyExcludedBySource ?? {};
   const sourceItems = registrySourceSummaryItems(opts.discoveries, excludedBySource);
   const sourceTotal = sourceItems.reduce((sum, item) => sum + item.count, 0);
   const dedupeNote = reconcileNote(sourceTotal, opts.protectedValues, opts.policyExcluded ?? 0);
+  const piiActive = opts.discoveries.some((d) => d.id === "pii/detector" && d.status === "active");
   const lines = [
     `🔒 ficta ready — ${opts.protectedValues} ${plural(opts.protectedValues, "protected value")}${dedupeNote}`,
     `   ${opts.agentCommand} → ${opts.baseUrl}`,
     `   sources: ${sourceItems.length > 0 ? sourceItems.map(formatSourceSummaryItem).join(", ") : "none loaded"}`,
+    `   pii: ${formatPiiStatus(piiActive, opts.piiFailClosed)}`,
   ];
 
   const errorCount = opts.discoveries.filter((d) => d.status === "error").length;
   if (errorCount > 0 && !opts.verbose) {
     lines.push(
-      `   attention: ${errorCount} registry ${plural(errorCount, "source")} errored; set FICTA_VERBOSE=1 or run \`ficta doctor\``,
+      `   attention: ${errorCount} registry ${plural(errorCount, "source")} errored; pass --ficta-verbose or run \`ficta doctor\``,
     );
   }
 
@@ -58,6 +69,17 @@ export function renderStartupBanner(opts: StartupBannerOptions): string {
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Render the pii line's status. Active launches note the resolved outage posture so the operator
+ * knows up front whether a backend outage blocks requests (fail-closed) or silently degrades to no
+ * detection (fail-open, the default) — the WARN only fires once the backend actually goes down.
+ */
+function formatPiiStatus(active: boolean, failClosed?: boolean): string {
+  if (!active) return "off";
+  const posture = failClosed ? "blocks on backend outage" : "skips on backend outage";
+  return `on (best-effort, ${posture})`;
 }
 
 /**

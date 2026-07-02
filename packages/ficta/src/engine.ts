@@ -1,3 +1,4 @@
+import { detectorFailClosed } from "./detection-policy.js";
 import {
   type DetectTextContext,
   defaultPlugins,
@@ -8,13 +9,14 @@ import {
   protectedValueExcludedBy,
   type RegistryPolicy,
 } from "./plugins/index.js";
-import type {
-  BodyRedactionDetails,
-  ProtectionHit,
-  RedactionEngine,
-  RequestScope,
-  TextRedactionContext,
-  TextRedactionDetails,
+import {
+  type BodyRedactionDetails,
+  DetectorUnavailableError,
+  type ProtectionHit,
+  type RedactionEngine,
+  type RequestScope,
+  type TextRedactionContext,
+  type TextRedactionDetails,
 } from "./redaction-engine.js";
 import { redactableBodyText, type ScopedVault, Vault } from "./vault.js";
 import type { Wire } from "./wire.js";
@@ -229,8 +231,16 @@ class ProtectionRequestScope implements RequestScope {
       let detected: readonly ProtectedValue[];
       try {
         detected = (await plugin.detectText?.(text, ctx)) ?? [];
-      } catch {
-        // Detector plugins are best-effort and must not take down the exact-match proxy path.
+      } catch (err) {
+        // Detector plugins are best-effort and must not take down the exact-match proxy path. A
+        // detector only *signals* a backend outage (DetectorUnavailableError); core owns the policy:
+        // resolve the detector's own fail-closed override against the global default and either block
+        // (re-raise → server.ts refuses to forward) or skip detection for this request (continue).
+        if (err instanceof DetectorUnavailableError) {
+          const override = plugin.kind === "detector" ? plugin.failClosed?.() : undefined;
+          if (detectorFailClosed(override)) throw err;
+          continue;
+        }
         continue;
       }
       if (detected.length === 0) continue;

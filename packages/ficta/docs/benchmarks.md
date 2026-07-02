@@ -8,7 +8,7 @@ pnpm exec tsx bench/e2e-bench.mts          # round-trip latency vs direct
 
 Two layers: a **microbench** of the vault's core operations (no network, isolates CPU cost) and
 an **end-to-end** measurement of proxy round-trip latency against a local mock upstream
-(`FICTA_LOG_BODIES=0`, quiet mode, so disk/console I/O doesn't skew it).
+(`FICTA_LOG_LEVEL=silent`, so disk/console I/O doesn't skew it).
 
 ## 1. Vault microbench (per-operation, milliseconds)
 

@@ -160,5 +160,35 @@ describe("protection engine plugins", () => {
       expect(redacted.body).not.toContain("real-secret-value-abc");
       expect(redacted.body).not.toContain("kept-secret-value-xyz");
     });
+
+    it("honors the user's FICTA_REGISTRY_EXCLUDE_NAMES at request-time detection", async () => {
+      saved = Object.fromEntries(POLICY_ENV.map((k) => [k, process.env[k]]));
+      process.env.FICTA_REGISTRY_DOPPLER_ENABLED = "0";
+      process.env.FICTA_REGISTRY_PROCESS_ENV_ENABLED = "0";
+      process.env.FICTA_REGISTRY_ENV_FILE_ENABLED = "0";
+      const savedExclude = process.env.FICTA_REGISTRY_EXCLUDE_NAMES;
+      process.env.FICTA_REGISTRY_EXCLUDE_NAMES = "BUILD_ID";
+      try {
+        const detector: DetectorPlugin = {
+          kind: "detector",
+          name: "fixture-detector",
+          detectText: () => [
+            { name: "BUILD_ID", value: "build-label-1234", source: "fixture", kind: "secret", confidence: "exact" },
+            { name: "REAL", value: "real-secret-value-abc", source: "fixture", kind: "secret", confidence: "exact" },
+          ],
+        };
+        const engine = new ProtectionEngine({ plugins: [detector] });
+        const redacted = await engine.redactBodyDetailed(
+          JSON.stringify({ content: "build-label-1234 / real-secret-value-abc" }),
+        );
+
+        expect(redacted.leaks).toBe(0);
+        expect(redacted.body).toContain("build-label-1234"); // user-excluded, left intact
+        expect(redacted.body).not.toContain("real-secret-value-abc"); // still protected
+      } finally {
+        if (savedExclude === undefined) delete process.env.FICTA_REGISTRY_EXCLUDE_NAMES;
+        else process.env.FICTA_REGISTRY_EXCLUDE_NAMES = savedExclude;
+      }
+    });
   });
 });

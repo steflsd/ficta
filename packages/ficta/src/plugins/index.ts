@@ -3,12 +3,19 @@ import { isRecord } from "../vault.js";
 import { builtInAgentPlugin } from "./agents.js";
 import { dopplerPlugin, resetDopplerPluginCacheForTests } from "./doppler.js";
 import { knownEnvPlugin, resetKnownEnvPluginCacheForTests } from "./known-env.js";
-import { piiPlugin } from "./pii/index.js";
-import { buildRegistryPolicy, protectedValueExcludedBy, validateRegistryPolicy } from "./policy.js";
+import { piiPlugin, resetPiiRecognizerStateForTests } from "./pii/index.js";
+import {
+  buildRegistryPolicy,
+  parseUserExclusionRule,
+  protectedValueExcludedBy,
+  USER_EXCLUSION_PLUGIN,
+  validateRegistryPolicy,
+} from "./policy.js";
 import type {
   AgentIntegration,
   ConfigBinding,
   ConfigSection,
+  EffectiveRegistryExclusionRule,
   FictaPlugin,
   PluginDiscovery,
   PluginDiscoveryStatus,
@@ -28,9 +35,34 @@ export {
   piModelsConfig,
 } from "./agents.js";
 export { dopplerPlugin } from "./doppler.js";
-export { piiPlugin } from "./pii/index.js";
+export {
+  piiEnabled,
+  piiFailClosed,
+  piiPlugin,
+  resetPiiRecognizerStateForTests,
+  resolveAgentPiiEnabled,
+} from "./pii/index.js";
+export {
+  checkPresidioHealth,
+  PresidioUnavailableError,
+  presidioConfig,
+} from "./pii/presidio-recognizer.js";
 export type { PiiRecognizer } from "./pii/recognizer.js";
-export { buildRegistryPolicy, protectedValueExcludedBy } from "./policy.js";
+export {
+  activeBackend,
+  builtInBackendNames,
+  DEFAULT_BACKEND,
+  ENV_BACKEND,
+  selectedBackendName,
+} from "./pii/registry.js";
+export type { UserExclusionParse } from "./policy.js";
+export {
+  buildRegistryPolicy,
+  parseUserExclusionRule,
+  protectedValueExcludedBy,
+  USER_EXCLUSION_PLUGIN,
+  USER_EXCLUSION_RULE_ID,
+} from "./policy.js";
 export type {
   AgentBypassContext,
   AgentIntegration,
@@ -189,17 +221,38 @@ export interface PluginRegistrySnapshot {
   policyExcluded: number;
   /** Excluded counts keyed by the candidate's `source` (e.g. "process-env"), for per-source reporting. */
   policyExcludedBySource: Record<string, number>;
+  /** Safe metadata for each dropped candidate — names/sources/rule only, never values (used by `ficta review`). */
+  policyExcludedValues: Array<{ name: string; source: string; plugin: string; rule: EffectiveRegistryExclusionRule }>;
 }
 
 export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlugins): PluginRegistrySnapshot {
   validatePluginBoundaries(plugins);
 
-  const registryPolicy = buildRegistryPolicy(plugins, TRUSTED_PLUGINS);
+  // The user's own exclusion list is a trusted rule (see parseUserExclusionRule); prepend it so an
+  // overlapping name is attributed to the user rather than a plugin. It flows through the returned
+  // registryPolicy to both enforcement seams (load filter here + request-time admit() in engine.ts).
+  const userExclusion = parseUserExclusionRule(process.env.FICTA_REGISTRY_EXCLUDE_NAMES);
+  const pluginPolicy = buildRegistryPolicy(plugins, TRUSTED_PLUGINS);
+  const registryPolicy: RegistryPolicy = userExclusion.rule
+    ? { exclusions: [userExclusion.rule, ...pluginPolicy.exclusions] }
+    : pluginPolicy;
   const values: ProtectedValue[] = [];
   const pluginNames: string[] = [];
   const discoveries: PluginDiscovery[] = [];
   let policyExcluded = 0;
   const policyExcludedBySource: Record<string, number> = {};
+  const policyExcludedValues: PluginRegistrySnapshot["policyExcludedValues"] = [];
+
+  if (userExclusion.invalidNames.length > 0) {
+    // status "available" renders as a note without tripping strict-mode error gates (which key off "error").
+    discoveries.push({
+      id: "user-config/exclude-names",
+      plugin: USER_EXCLUSION_PLUGIN,
+      label: "registry.exclude_names",
+      status: "available",
+      message: `ignoring invalid name(s): ${userExclusion.invalidNames.join(", ")}`,
+    });
+  }
 
   for (const plugin of plugins) {
     pluginNames.push(plugin.name);
@@ -215,9 +268,16 @@ export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlug
       const loaded = plugin.loadValues();
       for (const value of loaded) {
         const candidate = { ...value, plugin: value.plugin ?? plugin.name };
-        if (protectedValueExcludedBy(candidate, registryPolicy)) {
+        const excludedBy = protectedValueExcludedBy(candidate, registryPolicy);
+        if (excludedBy) {
           policyExcluded++;
           policyExcludedBySource[candidate.source] = (policyExcludedBySource[candidate.source] ?? 0) + 1;
+          policyExcludedValues.push({
+            name: candidate.name,
+            source: candidate.source,
+            plugin: candidate.plugin,
+            rule: excludedBy,
+          });
           continue;
         }
         values.push(candidate);
@@ -236,7 +296,15 @@ export function loadPluginRegistry(plugins: readonly FictaPlugin[] = defaultPlug
     collectDiscovery(plugin.name, plugin.discover, discoveries);
   }
 
-  return { values, pluginNames, discoveries, registryPolicy, policyExcluded, policyExcludedBySource };
+  return {
+    values,
+    pluginNames,
+    discoveries,
+    registryPolicy,
+    policyExcluded,
+    policyExcludedBySource,
+    policyExcludedValues,
+  };
 }
 
 /** Run a plugin's discover() and append its lines, turning a throw into a safe error discovery. */
@@ -312,6 +380,7 @@ export function findAgentIntegration(
 export function resetPluginCachesForTests(): void {
   resetDopplerPluginCacheForTests();
   resetKnownEnvPluginCacheForTests();
+  resetPiiRecognizerStateForTests();
 }
 
 export function registryDiscoveryLines(

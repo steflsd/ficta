@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { inspectionLines, inspectJson, inspectSse, inspectText, registeredValueCount } from "./inspection.js";
+import { log } from "./logger.js";
 import { type Wire, wireOf } from "./wire.js";
 
 const cfg = loadConfig();
@@ -36,9 +37,9 @@ export function logRequest(args: {
 }): number {
   const n = ++seq;
   const wire = wireOf(args.path);
-  const show = !cfg.silent && !(cfg.quiet && wire === "unknown");
+  // Unknown (non-model) traffic is the old FICTA_QUIET tier: summarize at debug, model turns at info.
+  const level = wire === "unknown" ? "debug" : "info";
   const route = args.route ? ` [${args.route}]` : "";
-  if (show) console.log(`\n→ #${n} ${args.method} ${args.path}  →  ${args.target}${route}`);
 
   let parsed: unknown;
   let parseOk = false;
@@ -51,10 +52,23 @@ export function logRequest(args: {
     }
   }
 
-  if (show && parseOk) summarizeRequest(wire, parsed);
-
   const inspection = args.body ? (parseOk ? inspectJson(parsed) : inspectText(args.body)) : inspectText("");
-  if (show) for (const line of inspectionLines(inspection)) console.log(line);
+  const findings = inspectionLines(inspection);
+  log[level](
+    {
+      reqId: n,
+      wire,
+      method: args.method,
+      path: args.path,
+      target: args.target,
+      ...(args.route ? { route: args.route } : {}),
+      ...(parseOk ? { summary: requestMeta(wire, parsed) } : {}),
+      ...(findings.length ? { findings } : {}),
+    },
+    `→ ${args.method} ${args.path} → ${args.target}${route}`,
+  );
+  // Raw message/tool content only at trace (the raw-body tier).
+  if (cfg.logBodies && parseOk) logRequestBodyPreviews(wire, parsed, n);
 
   writeMeta("req", n, {
     kind: "request",
@@ -125,7 +139,7 @@ export async function logResponse(args: {
   }
 
   const wire = wireOf(args.path);
-  const show = !cfg.silent && !(cfg.quiet && wire === "unknown");
+  const level = wire === "unknown" ? "debug" : "info";
   const isSse = args.contentType.includes("event-stream");
   let parsed: unknown;
   let parseOk = false;
@@ -145,16 +159,28 @@ export async function logResponse(args: {
         ? inspectJson(parsed)
         : inspectText(raw)
     : inspectText("");
+  const findings = inspectionLines(inspection);
 
-  if (show) {
-    console.log(`← #${args.n} ${args.status} ${args.contentType}  (${raw.length} bytes)`);
+  log[level](
+    {
+      reqId: args.n,
+      wire,
+      status: args.status,
+      contentType: args.contentType,
+      bytes: raw.length,
+      ...(isSse ? { sse: sseMeta(raw) } : parseOk ? { summary: responseMeta(wire, parsed) } : {}),
+      ...(findings.length ? { findings } : {}),
+    },
+    `← ${args.status} ${args.contentType} (${raw.length} bytes)`,
+  );
+  // Reassembled message/tool content only at trace (the raw-body tier).
+  if (cfg.logBodies) {
     if (isSse) {
       const s = summarizeSSE(wire, raw);
-      if (s) console.log(s);
+      if (s) log.trace({ reqId: args.n }, s);
     } else if (parseOk) {
-      summarizeResponseJSON(wire, parsed);
+      logResponseBodyPreviews(wire, parsed, args.n);
     }
-    for (const line of inspectionLines(inspection)) console.log(line);
   }
 
   writeMeta("res", args.n, {
@@ -321,91 +347,45 @@ function sseMeta(raw: string): Record<string, unknown> {
 
 // ---------------------------------------------------------------- requests
 
-function summarizeRequest(wire: Wire, j: any): void {
-  switch (wire) {
-    case "openai-chat":
-      summarizeOpenAIChatReq(j);
-      return;
-    case "openai-responses":
-      summarizeOpenAIResponsesReq(j);
-      return;
-    case "anthropic":
-      summarizeAnthropicReq(j);
-      return;
-    default:
-      console.log(`   [unknown] keys=${topLevelKeyCount(j)}`);
-  }
-}
-
-function summarizeAnthropicReq(j: any): void {
-  const bits: string[] = ["[anthropic]"];
-  if (j?.model !== undefined) bits.push("model=yes");
-  if (j?.stream !== undefined) bits.push(typeof j.stream === "boolean" ? `stream=${j.stream}` : "stream=yes");
-  if (Array.isArray(j?.messages)) bits.push(`messages=${j.messages.length}`);
-  if (j?.system) bits.push("system=yes");
-  if (Array.isArray(j?.tools)) bits.push(`tools=${j.tools.length}`);
-  console.log("   " + bits.join("  "));
-
-  if (!cfg.logBodies) return;
-
-  if (Array.isArray(j?.messages)) {
+// Raw message/tool content previews for the trace tier. The compact per-request summary (model,
+// stream, message/tool counts) rides as structured fields on the → request log via requestMeta().
+function logRequestBodyPreviews(wire: Wire, j: any, reqId: number): void {
+  if (wire === "anthropic") {
+    if (!Array.isArray(j?.messages)) return;
     for (const m of j.messages) {
       if (!Array.isArray(m.content)) continue;
       for (const block of m.content) {
         if (block?.type === "tool_result") {
           const c = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-          console.log(`   ⤷ tool_result: ${preview(c, 220)}`);
+          log.trace({ reqId }, `⤷ tool_result: ${preview(c, 220)}`);
         }
       }
     }
+    return;
   }
-}
-
-function summarizeOpenAIChatReq(j: any): void {
-  const bits: string[] = ["[openai-chat]"];
-  if (j?.model !== undefined) bits.push("model=yes");
-  if (j?.stream !== undefined) bits.push(typeof j.stream === "boolean" ? `stream=${j.stream}` : "stream=yes");
-  if (Array.isArray(j?.messages)) bits.push(`messages=${j.messages.length}`);
-  if (Array.isArray(j?.tools)) bits.push(`tools=${j.tools.length}`);
-  console.log("   " + bits.join("  "));
-
-  if (!cfg.logBodies) return;
-
-  if (Array.isArray(j?.messages)) {
+  if (wire === "openai-chat") {
+    if (!Array.isArray(j?.messages)) return;
     for (const m of j.messages) {
       if (m.role === "tool") {
         const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-        console.log(`   ⤷ tool result: ${preview(c, 220)}`);
+        log.trace({ reqId }, `⤷ tool result: ${preview(c, 220)}`);
       }
-      if (Array.isArray(m.tool_calls)) {
-        for (const tc of m.tool_calls) {
-          console.log(`   ↩ tool_call ${tc.function?.name}: ${preview(tc.function?.arguments, 200)}`);
-        }
+      for (const tc of m.tool_calls ?? []) {
+        log.trace({ reqId }, `↩ tool_call ${tc.function?.name}: ${preview(tc.function?.arguments, 200)}`);
       }
     }
+    return;
   }
-}
-
-function summarizeOpenAIResponsesReq(j: any): void {
-  const bits: string[] = ["[openai-responses]"];
-  if (j?.model !== undefined) bits.push("model=yes");
-  if (j?.stream !== undefined) bits.push(typeof j.stream === "boolean" ? `stream=${j.stream}` : "stream=yes");
-  if (j?.instructions) bits.push("instructions=yes");
-  if (Array.isArray(j?.tools)) bits.push(`tools=${j.tools.length}`);
-  if (typeof j?.input === "string") bits.push("input=string");
-  else if (Array.isArray(j?.input)) bits.push(`input=${j.input.length}`);
-  console.log("   " + bits.join("  "));
-
-  if (!cfg.logBodies) return;
-
-  if (typeof j?.input === "string") {
-    console.log(`   input: ${preview(j.input, 220)}`);
-  } else if (Array.isArray(j?.input)) {
-    for (const it of j.input) {
-      if (it?.type === "function_call_output") {
-        console.log(`   ⤷ function_call_output: ${preview(it.output, 220)}`);
-      } else if (it?.type === "function_call") {
-        console.log(`   ↩ function_call ${it.name}: ${preview(it.arguments, 200)}`);
+  if (wire === "openai-responses") {
+    if (typeof j?.input === "string") {
+      log.trace({ reqId }, `input: ${preview(j.input, 220)}`);
+    } else if (Array.isArray(j?.input)) {
+      for (const it of j.input) {
+        if (it?.type === "function_call_output") {
+          log.trace({ reqId }, `⤷ function_call_output: ${preview(it.output, 220)}`);
+        } else if (it?.type === "function_call") {
+          log.trace({ reqId }, `↩ function_call ${it.name}: ${preview(it.arguments, 200)}`);
+        }
       }
     }
   }
@@ -413,31 +393,29 @@ function summarizeOpenAIResponsesReq(j: any): void {
 
 // ---------------------------------------------------------------- responses (JSON)
 
-function summarizeResponseJSON(wire: Wire, j: any): void {
-  if (!cfg.logBodies) return;
-
+function logResponseBodyPreviews(wire: Wire, j: any, reqId: number): void {
   if (wire === "anthropic" && Array.isArray(j.content)) {
     for (const block of j.content) {
-      if (block?.type === "text") console.log(`   text: ${preview(block.text, 300)}`);
+      if (block?.type === "text") log.trace({ reqId }, `text: ${preview(block.text, 300)}`);
       else if (block?.type === "tool_use")
-        console.log(`   tool_use ${block.name}: ${preview(JSON.stringify(block.input ?? {}), 400)}`);
+        log.trace({ reqId }, `tool_use ${block.name}: ${preview(JSON.stringify(block.input ?? {}), 400)}`);
     }
     return;
   }
   if (wire === "openai-chat" && Array.isArray(j.choices)) {
     for (const c of j.choices) {
       const msg = c.message ?? {};
-      if (msg.content) console.log(`   text: ${preview(msg.content, 300)}`);
+      if (msg.content) log.trace({ reqId }, `text: ${preview(msg.content, 300)}`);
       for (const tc of msg.tool_calls ?? [])
-        console.log(`   tool_call ${tc.function?.name}: ${preview(tc.function?.arguments, 400)}`);
+        log.trace({ reqId }, `tool_call ${tc.function?.name}: ${preview(tc.function?.arguments, 400)}`);
     }
     return;
   }
   if (wire === "openai-responses" && Array.isArray(j.output)) {
     for (const it of j.output) {
       if (it?.type === "message")
-        for (const part of it.content ?? []) if (part?.text) console.log(`   text: ${preview(part.text, 300)}`);
-      if (it?.type === "function_call") console.log(`   function_call ${it.name}: ${preview(it.arguments, 400)}`);
+        for (const part of it.content ?? []) if (part?.text) log.trace({ reqId }, `text: ${preview(part.text, 300)}`);
+      if (it?.type === "function_call") log.trace({ reqId }, `function_call ${it.name}: ${preview(it.arguments, 400)}`);
     }
   }
 }

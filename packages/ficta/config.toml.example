@@ -28,7 +28,7 @@ fail_closed = true
 redact_paths = false
 
 [logging]
-log_bodies = false
+# Raw body logging is runtime-only (FICTA_LOG_LEVEL=trace); it is never persisted here.
 max_bytes = 262144
 log_dir = "~/.ficta/logs"
 

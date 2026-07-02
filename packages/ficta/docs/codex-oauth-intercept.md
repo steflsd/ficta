@@ -100,5 +100,6 @@ body logs off unless debugging.
   channel; ficta redacts registered values before forwarding, but don't use real secrets as an
   onboarding test.
 - Codex is chatty: `/backend-api/{plugins,ps/mcp,codex/analytics-events,wham/usage}` housekeeping
-  may appear on startup. Use `FICTA_QUIET=1` to show only model turns.
+  may appear on startup; the default `info` level already shows only model turns (raise to
+  `FICTA_LOG_LEVEL=debug` to see this non-model traffic).
 - `codex exec` needs `--skip-git-repo-check` when the cwd isn't a git repo.

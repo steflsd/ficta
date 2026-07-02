@@ -177,7 +177,7 @@ function runAgent(agent: AgentSpec, bin: string): RunArtifacts {
       // Relaxed for the negative control, which deliberately registers nothing.
       FICTA_REQUIRE_REGISTRY: REGISTRY_OVERRIDE ? "0" : "1",
       // Capture exactly what ficta forwards upstream.
-      FICTA_LOG_BODIES: "1",
+      FICTA_LOG_LEVEL: "trace",
       FICTA_LOG_DIR: logDir,
     },
   });

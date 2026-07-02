@@ -1,9 +1,10 @@
 # ficta PII redaction gateway + TanStack Start chat UI — north star
 
-> **Status:** in progress. The ficta-core backend for this gateway is partly built (see
-> **Progress** below); the `apps/web` TanStack Start UI and the Presidio recognizer are not
-> built yet. North-star reference — captures decisions, architecture, and the intended module
-> layout. Last updated: 2026-07-01.
+> **Status:** in progress. The ficta-core backend for this gateway is largely built (see
+> **Progress** below), including the Presidio recognizer. The `apps/web` TanStack Start UI is now
+> built (installs, typechecks, and builds — client + SSR) but not yet exercised end-to-end against a
+> live proxy + vendor; `FICTA_HOST` + Docker packaging are not built yet. North-star reference —
+> captures decisions, architecture, and the intended module layout. Last updated: 2026-07-02.
 
 ## Progress
 
@@ -16,13 +17,22 @@ Built and verified (behind `pnpm verify`):
   `config`/`setup`/`discover` (`types.ts`); the config/setup/discovery plumbing in `plugins/index.ts`
   gathers from any plugin kind (`loadValues` stays registry-source-only).
 - **PII detector MVP** — `piiPlugin` (`src/plugins/pii/index.ts`) composing a high-precision regex
-  recognizer (email, US SSN, credit-card+Luhn). Off by default via `FICTA_PII_ENABLED` ↔ `pii.enabled`;
-  in `defaultPlugins`; detected PII tokenized on egress and restored on responses.
+  recognizer (email, US SSN, credit-card+Luhn). Off by default via `FICTA_PII_ENABLED` ↔ `pii.enabled`
+  (per-surface: the standalone/web proxy honors that flag, but launched coding agents stay off unless
+  `FICTA_PII_AGENTS` ↔ `pii.agents` is also set); in `defaultPlugins`; detected PII tokenized on egress
+  and restored on responses.
 - **Detection path is async** — `detectText` may return a `Promise`; `engine.redactBodyDetailed` /
   `redactTextDetailed` and `server.ts` await it. This is what lets an out-of-process recognizer plug in.
+- **Config-driven backend selection + Presidio backend** — a single backend is selected by name via
+  `FICTA_PII_BACKEND` ↔ `[pii] backend` (`src/plugins/pii/registry.ts`, default `regex`); `ficta
+  setup` prompts for it. The async `presidioRecognizer` (`src/plugins/pii/presidio-recognizer.ts`)
+  POSTs each request body to a `presidio-analyzer` sidecar, gates on `ctx.surface === "body"`, maps
+  spans → `ProtectedValue[]` (code-point-offset safe). The selected backend is exclusive (no
+  cross-backend fallback); when it can't run, `[pii] fail_closed` ↔ `FICTA_PII_FAIL_CLOSED` chooses
+  between skipping detection for that request (default, warn-once) and blocking it with a 503. `ficta
+  doctor` probes `/health`. Config: `[pii.presidio]` url/language/score_threshold/entities/timeout_ms.
 
-Not built yet: the async **Presidio/NER recognizer**, `FICTA_HOST` + Docker, and the entire
-`apps/web` UI.
+Not built yet: `FICTA_HOST` + Docker packaging. (The `apps/web` UI is now built — see Status above.)
 
 ## Context
 
@@ -107,7 +117,7 @@ docs/
 2. **PII detector plugin** — a `DetectorPlugin` (`kind:"detector"`, `detectText`) emitting `ProtectedValue`s with `kind:"pii"`; the engine wires tokenize+restore.
    - **Structured, in-process, high precision — DONE:** `regexRecognizer` covers email, US SSN, credit-card (Luhn). Easy additions: phone, IP, bank/routing, DOB.
    - **Unstructured, out-of-process — TODO:** names/addresses/orgs via a **Microsoft Presidio** (or NER) **sidecar** — an async `presidioRecognizer` that POSTs text and maps results to `ProtectedValue[]`; gate it on `ctx.surface === "body"` so headers/query don't each hit the sidecar. The async detection path (done) is what makes this a drop-in behind `PiiRecognizer`.
-   - Registered in `defaultPlugins`, **off by default** via `FICTA_PII_ENABLED` ↔ `pii.enabled` (full `config`/`setup`/`discover`, like Doppler).
+   - Registered in `defaultPlugins`, **off by default** via `FICTA_PII_ENABLED` ↔ `pii.enabled` (full `config`/`setup`/`discover`, like Doppler). Posture is **per-surface**: the standalone/web proxy honors `pii.enabled`, while launched coding agents (`ficta claude|codex|pi`) require `pii.agents` too — the launcher resolves both to one effective `FICTA_PII_ENABLED` before the proxy loads.
 3. **`apps/web` TanStack Start chat UI** — `/api/chat` server route using TanStack AI with the adapter `baseURL` pointed at the ficta proxy; `useChat` on the client. Provider/model picker for "any model, BYO key." Optional PII-transparency UX later (show what was redacted).
 4. **Surrogate realism (optional).** `FICTA_<hex>` tokens may degrade legal reasoning; per-`kind` realistic, consistent fake surrogates preserve fluency — a `vault.ts` change. Defer unless output quality needs it.
 5. **Positioning doc** — `docs/threat-model-pii.md` (style of `docs/threat-model.md`): **best-effort reduction, not a guarantee**; undetected PII can pass. Matters for the firm's own compliance claims.

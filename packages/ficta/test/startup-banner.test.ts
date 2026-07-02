@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PluginDiscovery, RegistryPolicy } from "../src/plugins/index.js";
-import { renderStartupBanner } from "../src/startup-banner.js";
+import { renderStartupBanner, shouldPrintStartupDiagnostics } from "../src/startup-banner.js";
 
 const discoveries: PluginDiscovery[] = [
   {
@@ -44,7 +44,8 @@ describe("startup banner", () => {
     expect(rendered).toBe(
       "🔒 ficta ready — 47 protected values (48 loaded before dedupe)\n" +
         "   pi → http://127.0.0.1:59717\n" +
-        "   sources: Doppler 34, .env.local 4, process env 10\n",
+        "   sources: Doppler 34, .env.local 4, process env 10\n" +
+        "   pii: off\n",
     );
     expect(rendered).not.toContain("not found");
     expect(rendered).not.toContain("doppler secrets download");
@@ -185,5 +186,35 @@ describe("startup banner", () => {
 
     expect(rendered).toContain("attention: 1 registry source errored");
     expect(rendered).not.toContain("boom");
+  });
+
+  it("reports the per-session PII posture from the detector discovery", () => {
+    const base = { protectedValues: 0, agentCommand: "claude", baseUrl: "http://127.0.0.1:1" };
+    const active = [{ id: "pii/detector", plugin: "pii", label: "PII detector", status: "active" as const }];
+
+    // Active without an explicit posture defaults to the fail-open wording.
+    const on = renderStartupBanner({ ...base, discoveries: active });
+    expect(on).toContain("   pii: on (best-effort, skips on backend outage)\n");
+
+    const failOpen = renderStartupBanner({ ...base, discoveries: active, piiFailClosed: false });
+    expect(failOpen).toContain("   pii: on (best-effort, skips on backend outage)\n");
+
+    const failClosed = renderStartupBanner({ ...base, discoveries: active, piiFailClosed: true });
+    expect(failClosed).toContain("   pii: on (best-effort, blocks on backend outage)\n");
+
+    const off = renderStartupBanner({
+      ...base,
+      discoveries: [{ id: "pii/detector", plugin: "pii", label: "PII detector", status: "disabled" }],
+      // A posture on a disabled detector is irrelevant — the line stays a bare "off".
+      piiFailClosed: true,
+    });
+    expect(off).toContain("   pii: off\n");
+  });
+
+  it("suppresses launch diagnostics only for default interactive TTY runs", () => {
+    expect(shouldPrintStartupDiagnostics({ verbose: false, stderrIsTTY: true })).toBe(false);
+    expect(shouldPrintStartupDiagnostics({ verbose: true, stderrIsTTY: true })).toBe(true);
+    expect(shouldPrintStartupDiagnostics({ verbose: false, stderrIsTTY: false })).toBe(true);
+    expect(shouldPrintStartupDiagnostics({ verbose: false })).toBe(true);
   });
 });

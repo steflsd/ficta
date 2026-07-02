@@ -8,9 +8,13 @@
     "start": "node .output/server/index.mjs",
     "typecheck": "tsc --noEmit",
     "check": "biome check .",
-    "check:fix": "biome check --write ."
+    "check:fix": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.3",
     "@tailwindcss/vite": "4.3.2",
     "@tanstack/ai": "latest",
     "@tanstack/ai-anthropic": "latest",
@@ -18,9 +22,13 @@
     "@tanstack/ai-react": "latest",
     "@tanstack/react-router": "latest",
     "@tanstack/react-start": "latest",
+    "@workos-inc/node": "^10.7.0",
+    "@workos/authkit-tanstack-react-start": "^0.11.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
+    "drizzle-orm": "^0.45.2",
     "lucide-react": "1.23.0",
+    "pg": "^8.22.0",
     "radix-ui": "^1.6.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -31,11 +39,14 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",
     "@types/node": "^26.0.1",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "latest",
+    "drizzle-kit": "^0.31.10",
     "nitro": "latest",
     "typescript": "^6.0.3",
-    "vite": "latest"
+    "vite": "latest",
+    "vitest": "^4.1.9"
   }
 }

@@ -199,9 +199,9 @@ function envFileSetupSource(env: NodeJS.ProcessEnv): RegistrySetupSource {
     defaultEnabled: envEnabled(env.FICTA_REGISTRY_ENV_FILE_ENABLED, true),
     async enabledValues(ctx) {
       const paths = await ctx.promptText(
-        "Env files to load",
+        "Env file paths to load (colon-separated)",
         ctx.env.FICTA_REGISTRY_ENV_FILE_PATHS ?? DEFAULT_ENV_FILE,
-        "Colon-separated paths, relative to the repo where the agent starts.",
+        "Relative to the repo where the agent starts, e.g. .env:.env.local.",
       );
       return {
         FICTA_REGISTRY_ENV_FILE_ENABLED: "1",

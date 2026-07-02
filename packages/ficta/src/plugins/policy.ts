@@ -63,6 +63,53 @@ export function protectedValueExcludedBy(
   return undefined;
 }
 
+/** Synthetic plugin label for the user's own exclusion list (registry.exclude_names / ficta review). */
+export const USER_EXCLUSION_PLUGIN = "user-config";
+export const USER_EXCLUSION_RULE_ID = "user-exclude-names";
+
+export interface UserExclusionParse {
+  /** Enforced rule built from the valid names, or undefined when none are valid. */
+  rule?: EffectiveRegistryExclusionRule;
+  /** Entries that failed env-name validation — reported for diagnostics, never enforced. */
+  invalidNames: string[];
+}
+
+/**
+ * Parse the user's own exclusion list (comma-separated env var names from FICTA_REGISTRY_EXCLUDE_NAMES
+ * / [registry] exclude_names) into an enforced, trusted rule. This is the one un-protection channel
+ * the local user controls directly; it is gated by the 0600 config file / process env, so core trusts
+ * it like a built-in. Invalid entries are separated out rather than silently dropped.
+ */
+export function parseUserExclusionRule(raw: string | undefined): UserExclusionParse {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  const invalidNames: string[] = [];
+  for (const entry of (raw ?? "").split(",")) {
+    const name = entry.trim();
+    if (!name) continue;
+    if (!ENV_NAME_RE.test(name)) {
+      if (!invalidNames.includes(name)) invalidNames.push(name);
+      continue;
+    }
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  names.sort();
+  const rule =
+    names.length === 0
+      ? undefined
+      : {
+          id: USER_EXCLUSION_RULE_ID,
+          kind: "env-name" as const,
+          names,
+          reason: "excluded by user (ficta review / registry.exclude_names)",
+          plugin: USER_EXCLUSION_PLUGIN,
+          trusted: true,
+        };
+  return { rule, invalidNames };
+}
+
 export function validateRegistryPolicy(pluginName: string, value: unknown): void {
   if (value === undefined) return;
   if (!isRecord(value)) throw new Error(`ficta plugin ${pluginName} registryPolicy must be an object`);

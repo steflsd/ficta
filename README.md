@@ -106,11 +106,18 @@ tests and local agent runs, but early users should run `ficta doctor <agent>` be
 
 ```sh
 pnpm install
+pnpm dev         # proxy + web; auto-uses Doppler when configured, otherwise local .env
+pnpm dev:proxy   # proxy only
+pnpm web:dev     # web UI only
 pnpm check       # biome
 pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+`pnpm dev` is for developing the proxy + web UI together. The coding agents don't use it — `ficta
+claude|codex|pi` starts its own ephemeral proxy per launch (see
+[`docs/install.md`](packages/ficta/docs/install.md)).
 
 ## License
 

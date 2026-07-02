@@ -1,18 +1,27 @@
 import { accessSync, constants, existsSync } from "node:fs";
 import { configuredUpstreamPolicyIssues, loadConfig } from "./config.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
+import { detectorFailClosed } from "./detection-policy.js";
 import { envFlag } from "./env-flags.js";
 import { globalDisablePath, isGloballyDisabled } from "./global-disable.js";
 import { defaultShimDir, findExecutable } from "./install.js";
+import type { LogLevel } from "./log-level.js";
 import { codexUsesChatgptAuth } from "./plugins/agents.js";
 import {
   type AgentIntegration,
+  activeBackend,
   agentIntegrations,
+  checkPresidioHealth,
   loadPluginRegistry,
   type PluginDiscovery,
+  parseUserExclusionRule,
+  piiEnabled,
+  piiFailClosed,
   type RegistryPolicy,
   registryDiscoveryLines,
   registryPolicyLines,
+  resolveAgentPiiEnabled,
+  selectedBackendName,
 } from "./plugins/index.js";
 import { configPath } from "./user-config.js";
 
@@ -26,11 +35,16 @@ export interface DoctorReport {
     configPath?: string;
     configExists: boolean;
     failClosed: boolean;
+    logLevel: LogLevel;
     logBodies: boolean;
     redactPaths: boolean;
     requireRegistry: boolean;
     globallyDisabled: boolean;
     disablePath: string;
+    /** PII detection posture for the web/standalone proxy (governed by [pii] enabled). */
+    piiStandalone: boolean;
+    /** PII detection posture for launched coding agents (needs [pii] enabled AND [pii] agents). */
+    piiAgents: boolean;
     upstreams: { anthropic: string; openai: string; chatgpt: string };
     forcedUpstream?: string;
     allowCustomUpstream: boolean;
@@ -62,7 +76,7 @@ interface DoctorIssue {
   message: string;
 }
 
-export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
+export async function collectDoctorReport(opts: DoctorOptions = {}): Promise<DoctorReport> {
   applyRuntimeEnvDefaults(process.env);
 
   const cfg = loadConfig();
@@ -108,7 +122,10 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
     issues.push({ severity: "error", message: upstreamIssue });
   }
   if (cfg.logBodies) {
-    issues.push({ severity: "warning", message: "FICTA_LOG_BODIES=1 is set; raw model bodies may be written to disk" });
+    issues.push({
+      severity: "warning",
+      message: "FICTA_LOG_LEVEL=trace is set; raw model bodies may be written to disk",
+    });
   }
   const path = configPath();
   if (!process.env.FICTA_SURROGATE_KEY) {
@@ -118,6 +135,38 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
         ? "no stable surrogate key is active yet; normal launch/install will generate one in ~/.ficta/config.toml"
         : "no stable surrogate key is active; FICTA_CONFIG_FILE=0 means launches use per-process surrogates unless FICTA_SURROGATE_KEY is set",
     });
+  }
+
+  const { invalidNames } = parseUserExclusionRule(process.env.FICTA_REGISTRY_EXCLUDE_NAMES);
+  if (invalidNames.length > 0) {
+    issues.push({
+      severity: "warning",
+      message: `registry.exclude_names has invalid entries (ignored): ${invalidNames.join(", ")}`,
+    });
+  }
+
+  if (piiEnabled()) {
+    const { unknown } = activeBackend();
+    if (unknown) {
+      issues.push({
+        severity: "warning",
+        message: `unknown PII backend "${unknown}" configured — falling back to regex`,
+      });
+    }
+    if (selectedBackendName() === "presidio") {
+      const health = await checkPresidioHealth();
+      if (!health.ok) {
+        const consequence = detectorFailClosed(piiFailClosed())
+          ? "requests will be BLOCKED (503) until it is reachable (fail-closed)"
+          : "PII detection is skipped for those requests (fail-open)";
+        issues.push({
+          severity: "warning",
+          message: `PII backend "presidio" is selected but ${health.url} is unreachable${
+            health.detail ? ` (${health.detail})` : ""
+          } — ${consequence}`,
+        });
+      }
+    }
   }
 
   const agentReports = agentsToCheck.map((agent) => doctorAgentReport(agent, Boolean(selected)));
@@ -130,11 +179,18 @@ export function collectDoctorReport(opts: DoctorOptions = {}): DoctorReport {
       configPath: path,
       configExists: Boolean(path && existsSync(path)),
       failClosed: cfg.failClosed,
+      logLevel: cfg.logLevel,
       logBodies: cfg.logBodies,
       redactPaths: envFlag(process.env.FICTA_REDACT_PATHS),
       requireRegistry: process.env.FICTA_REQUIRE_REGISTRY === "1",
       globallyDisabled,
       disablePath: globalDisablePath(),
+      // Config posture, not a per-run override, so the agent gate is evaluated with no shell value.
+      piiStandalone: piiEnabled(),
+      piiAgents: resolveAgentPiiEnabled({
+        enabled: process.env.FICTA_PII_ENABLED,
+        agents: process.env.FICTA_PII_AGENTS,
+      }),
       upstreams: cfg.upstreams,
       forcedUpstream: cfg.forcedUpstream,
       allowCustomUpstream: cfg.allowCustomUpstream,
@@ -166,6 +222,7 @@ export function renderDoctorReport(report: DoctorReport): string {
     lines.push("  - user config: disabled by FICTA_CONFIG_FILE=0");
   }
   lines.push(`  ${report.config.failClosed ? "✓" : "!"} fail-closed: ${report.config.failClosed ? "on" : "OFF"}`);
+  lines.push(`  - log level: ${report.config.logLevel}`);
   lines.push(`  ${report.config.logBodies ? "!" : "✓"} raw body logs: ${report.config.logBodies ? "ON" : "off"}`);
   lines.push(
     `  ${report.config.redactPaths ? "!" : "-"} path-like tokens: ${
@@ -179,6 +236,11 @@ export function renderDoctorReport(report: DoctorReport): string {
     `  ${report.config.globallyDisabled ? "!" : "✓"} global disable: ${
       report.config.globallyDisabled ? `ON (${report.config.disablePath})` : "off"
     }`,
+  );
+  lines.push(
+    `  ${report.config.piiStandalone || report.config.piiAgents ? "!" : "-"} pii detection: standalone/web ${
+      report.config.piiStandalone ? "on" : "off"
+    }; agent launches ${report.config.piiAgents ? "on" : "off"} (pii.agents)`,
   );
   lines.push("");
 

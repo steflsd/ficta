@@ -7,12 +7,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sanitizeAgentEnv } from "./child-env.js";
 import { applyRuntimeEnvDefaults } from "./defaults.js";
-import { envFlag } from "./env-flags.js";
+import { detectorFailClosed } from "./detection-policy.js";
 import { isGloballyDisabled, setGlobalDisabled } from "./global-disable.js";
 import { defaultShimDir, findExecutable, installShims, uninstallShims } from "./install.js";
-import { agentCommands, findAgentIntegration } from "./plugins/index.js";
-import { renderStartupBanner } from "./startup-banner.js";
+import { levelEnabled, parseLogLevel } from "./log-level.js";
+import { agentCommands, findAgentIntegration, piiFailClosed, resolveAgentPiiEnabled } from "./plugins/index.js";
+import { renderStartupBanner, shouldPrintStartupDiagnostics } from "./startup-banner.js";
 import { ensureSurrogateKey, loadUserConfig } from "./user-config.js";
+
+// Capture any *shell* FICTA_PII_ENABLED before loadUserConfig() merges the TOML default in — the
+// agent-launch PII gate below distinguishes an explicit override from a config-derived value.
+const shellPiiEnabled = process.env.FICTA_PII_ENABLED;
 
 loadUserConfig();
 
@@ -119,9 +124,15 @@ if (command === "enable") {
 
 if (command === "doctor") {
   const { collectDoctorReport, doctorExitCode, renderDoctorReport } = await import("./doctor.js");
-  const report = collectDoctorReport({ agent: args[1] });
+  const report = await collectDoctorReport({ agent: args[1] });
   process.stderr.write(renderDoctorReport(report));
   process.exit(doctorExitCode(report));
+}
+
+if (command === "review") {
+  const { runReview } = await import("./review.js");
+  await runReview();
+  process.exit(0);
 }
 
 const agent = findAgentIntegration(command);
@@ -164,14 +175,33 @@ if (agent.shouldBypass?.(rest)) {
   process.exit(await runChild(spawn(agentPath, rest, { stdio: "inherit", env: sanitizeAgentEnv(process.env) })));
 }
 
-// Sensible defaults BEFORE the proxy module loads (it reads these at import).
+// Sensible defaults BEFORE the proxy starts. logger.ts initializes lazily, so this level is captured
+// before any request-time proxy logs are emitted.
 applyRuntimeEnvDefaults(process.env);
-process.env.FICTA_SILENT ??= "1"; // keep the terminal clean for the agent
+process.env.FICTA_LOG_LEVEL ??= "silent"; // keep the terminal clean for the agent unless explicitly overridden
+
+// Per-surface PII gate: this is a launched coding agent, so PII detection is off unless explicitly
+// opted in (see resolveAgentPiiEnabled). Force FICTA_PII_ENABLED to the resolved value before the
+// proxy loads — the engine, discovery/banner, and doctor all read that one var. The forced value
+// flows into the agent's own env via sanitizeAgentEnv, which is fine: the agent never reads it.
+process.env.FICTA_PII_ENABLED = resolveAgentPiiEnabled({
+  shellValue: shellPiiEnabled,
+  enabled: process.env.FICTA_PII_ENABLED,
+  agents: process.env.FICTA_PII_AGENTS,
+})
+  ? "1"
+  : "0";
 
 // Stable surrogates by default for every entry path — generate/persist a local key if absent,
 // before the vault module reads FICTA_SURROGATE_KEY at import.
+const startupVerbose = verbose || levelEnabled(parseLogLevel(process.env.FICTA_LOG_LEVEL, "silent"), "debug");
+const printStartupDiagnostics = shouldPrintStartupDiagnostics({
+  verbose: startupVerbose,
+  stderrIsTTY: process.stderr.isTTY,
+});
+
 const surrogate = ensureSurrogateKey();
-if (surrogate.generated) {
+if (surrogate.generated && printStartupDiagnostics) {
   process.stderr.write(`🔑 ficta — generated a stable surrogate key (${surrogate.path}, 0600)\n`);
 }
 
@@ -180,18 +210,25 @@ const { surrogateKeyWarning } = await import("./vault.js");
 const proxy = await startProxy({ port: 0 });
 const base = `http://127.0.0.1:${proxy.port}`;
 
-process.stderr.write(
-  renderStartupBanner({
-    protectedValues: proxy.protectedValues,
-    agentCommand: agent.command,
-    baseUrl: base,
-    discoveries: proxy.registry,
-    policyExcluded: proxy.policyExcluded,
-    policyExcludedBySource: proxy.policyExcludedBySource,
-    registryPolicy: proxy.registryPolicy,
-    verbose: verbose || envFlag(process.env.FICTA_VERBOSE),
-  }),
-);
+if (printStartupDiagnostics) {
+  process.stderr.write(
+    renderStartupBanner({
+      protectedValues: proxy.protectedValues,
+      agentCommand: agent.command,
+      baseUrl: base,
+      discoveries: proxy.registry,
+      policyExcluded: proxy.policyExcluded,
+      policyExcludedBySource: proxy.policyExcludedBySource,
+      registryPolicy: proxy.registryPolicy,
+      // Resolve the detector's own override against the global default so the banner states the
+      // outage posture; env is fully merged (loadUserConfig + applyRuntimeEnvDefaults) by now.
+      piiFailClosed: detectorFailClosed(piiFailClosed()),
+      // --ficta-verbose is banner-only sugar (it never unmutes proxy logs); an explicit
+      // FICTA_LOG_LEVEL=debug also opts into the detailed registry report.
+      verbose: startupVerbose,
+    }),
+  );
+}
 
 const strictRegistry =
   process.env.FICTA_REQUIRE_REGISTRY === "1" && !allowEmpty && process.env.FICTA_ALLOW_EMPTY !== "1";
@@ -214,13 +251,13 @@ if (proxy.protectedValues === 0 && strictRegistry) {
   process.exit(2);
 }
 
-if (proxy.protectedValues === 0) {
+if (proxy.protectedValues === 0 && printStartupDiagnostics) {
   process.stderr.write(
     "   ⚠ no protected values loaded — launching anyway in passthrough mode; set FICTA_REQUIRE_REGISTRY=1 to block instead\n",
   );
 }
 const keyWarning = surrogateKeyWarning();
-if (keyWarning) process.stderr.write(`   ⚠ ${keyWarning}\n`);
+if (keyWarning && printStartupDiagnostics) process.stderr.write(`   ⚠ ${keyWarning}\n`);
 
 const agentPath = resolveAgentExecutable(agent.command);
 if (!agentPath) {
@@ -243,7 +280,7 @@ const child = spawn(plan.executable, plan.args, { stdio: "inherit", env: plan.en
 
 let cleaned = false;
 const shutdown = async () => {
-  process.stderr.write(`\n${proxy.statsSummary()}`);
+  if (printStartupDiagnostics) process.stderr.write(`\n${proxy.statsSummary()}`);
   proxy.close();
   if (!cleaned) {
     cleaned = true;
@@ -272,6 +309,7 @@ function printHelp(exitCode: number): never {
     "Commands:",
     renderHelpRows([
       ["setup", "Configure registry sources in ~/.ficta/config.toml"],
+      ["review", "Review discovered protected names; deselect to exclude from redaction"],
       ["doctor [agent]", "Check config, registry sources, and agent routing"],
       ["install [--force] [--no-shell]", `Install ${supportedAgents.join("/")} shims into ~/.ficta/bin`],
       ["uninstall [--no-shell]", "Remove installed shims"],
@@ -287,13 +325,13 @@ function printHelp(exitCode: number): never {
     "Agent flags:",
     renderHelpRows([
       ["--allow-empty", "Bypass FICTA_REQUIRE_REGISTRY=1 for this run"],
-      ["--ficta-verbose", "Print detailed registry source report at startup"],
+      ["--ficta-verbose", "Show startup diagnostics and detailed registry source report"],
     ]),
     "",
     "Environment:",
     renderHelpRows([
       ["FICTA_DISABLE=1", "Bypass ficta for one agent launch"],
-      ["FICTA_VERBOSE=1", "Show detailed registry diagnostics at startup"],
+      ["FICTA_LOG_LEVEL=<level>", "silent|error|warn|info|debug|trace (trace writes raw bodies to disk)"],
       ["FICTA_REQUIRE_REGISTRY=1", "Refuse to launch if no protected values load"],
     ]),
     "",

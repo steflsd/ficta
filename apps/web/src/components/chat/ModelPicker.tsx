@@ -7,6 +7,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MODELS, type ModelChoice } from "@/lib/models";
+import { isModelAllowed, modelKey } from "@/lib/storage/types";
+import { useInstanceSettings } from "@/lib/storage/useInstanceSettings";
 
 export function ModelPicker({
   value,
@@ -17,6 +19,9 @@ export function ModelPicker({
   onChange: (choice: ModelChoice) => void;
   disabled?: boolean;
 }) {
+  const instance = useInstanceSettings();
+  // Only offer models the instance allows; the /api/chat route enforces the same list server-side.
+  const models = MODELS.filter((m) => isModelAllowed(instance, modelKey(m)));
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -27,7 +32,7 @@ export function ModelPicker({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        {MODELS.map((m) => (
+        {models.map((m) => (
           <DropdownMenuItem
             key={m.model}
             onSelect={() => onChange(m)}

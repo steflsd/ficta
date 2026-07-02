@@ -225,6 +225,14 @@ export interface DetectorPlugin extends FictaPluginBase {
   setup?: RegistryPluginSetup;
   /** Optional startup discovery/status line (counts, names — never values). */
   discover?(): readonly PluginDiscovery[];
+  /**
+   * Optional per-detector fail-closed override. Return `true`/`false` to require/allow this detector's
+   * outages, or `undefined` to defer to the global default (`FICTA_FAIL_CLOSED_DETECTION`). This only
+   * *exposes* the user's configured policy — a detector never enforces it. When `detectText` throws a
+   * {@link import("../redaction-engine.js").DetectorUnavailableError}, the core resolves this against
+   * the global default and decides whether to block the request.
+   */
+  failClosed?(): boolean | undefined;
   /** Detectors have no exact values to load; `loadValues` stays a registry-source-only capability. */
   loadValues?: never;
   agents?: never;

@@ -3,6 +3,8 @@ dist
 .output
 .nitro
 .tanstack
+# Embedded PGlite data (default storage backend); real deployments use DATABASE_URL instead.
+.data
 # Local secrets — never commit:
 .env
 .env.local

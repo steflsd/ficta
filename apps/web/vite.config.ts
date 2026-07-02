@@ -14,7 +14,9 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    server: { port: 3000 },
+    // 4747 is deliberately uncommon: WORKOS_REDIRECT_URI is registered statically in the WorkOS
+    // dashboard, so the port must never drift. strictPort fails loudly instead of falling back.
+    server: { port: 4747, strictPort: true },
     resolve: {
       // `@` → src, so shadcn/ui-generated imports (`@/components/...`, `@/lib/utils`) resolve.
       alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },

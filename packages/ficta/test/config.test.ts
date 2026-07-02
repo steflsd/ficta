@@ -5,13 +5,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadConfig, upstreamPolicyIssue } from "../src/config.js";
 import { configPath, readUserConfig, writeUserConfig } from "../src/user-config.js";
 
-const originalLogBodies = process.env.FICTA_LOG_BODIES;
+const originalLogLevel = process.env.FICTA_LOG_LEVEL;
 const originalConfigFile = process.env.FICTA_CONFIG_FILE;
 const originalHost = process.env.FICTA_HOST;
 
 afterEach(() => {
-  if (originalLogBodies === undefined) delete process.env.FICTA_LOG_BODIES;
-  else process.env.FICTA_LOG_BODIES = originalLogBodies;
+  if (originalLogLevel === undefined) delete process.env.FICTA_LOG_LEVEL;
+  else process.env.FICTA_LOG_LEVEL = originalLogLevel;
 
   if (originalConfigFile === undefined) delete process.env.FICTA_CONFIG_FILE;
   else process.env.FICTA_CONFIG_FILE = originalConfigFile;
@@ -21,8 +21,9 @@ afterEach(() => {
 });
 
 describe("config hardening", () => {
-  it("keeps raw body logging off by default", () => {
-    delete process.env.FICTA_LOG_BODIES;
+  it("defaults to the info log level with raw body logging off", () => {
+    delete process.env.FICTA_LOG_LEVEL;
+    expect(loadConfig().logLevel).toBe("info");
     expect(loadConfig().logBodies).toBe(false);
   });
 
@@ -35,12 +36,19 @@ describe("config hardening", () => {
     expect(loadConfig().host).toBe("0.0.0.0");
   });
 
-  it("requires explicit opt-in for raw body logging", () => {
-    process.env.FICTA_LOG_BODIES = "1";
+  it("only writes raw bodies at the trace level", () => {
+    process.env.FICTA_LOG_LEVEL = "trace";
     expect(loadConfig().logBodies).toBe(true);
 
-    process.env.FICTA_LOG_BODIES = "0";
-    expect(loadConfig().logBodies).toBe(false);
+    for (const level of ["debug", "info", "warn", "error", "silent"]) {
+      process.env.FICTA_LOG_LEVEL = level;
+      expect(loadConfig().logBodies).toBe(false);
+    }
+  });
+
+  it("falls back to info for an unrecognized log level", () => {
+    process.env.FICTA_LOG_LEVEL = "verbose";
+    expect(loadConfig().logLevel).toBe("info");
   });
 
   it("expands ~ in FICTA_CONFIG_FILE", () => {
@@ -94,7 +102,6 @@ describe("config hardening", () => {
           FICTA_REGISTRY_DOPPLER_CONFIGS: "dev,prod",
           FICTA_REGISTRY_MIN_LEN: "12",
           FICTA_REQUIRE_REGISTRY: "1",
-          FICTA_LOG_BODIES: "0",
           FICTA_LOG_MAX_BYTES: "12345",
           FICTA_ALLOW_CUSTOM_UPSTREAM: "1",
         },
@@ -110,10 +117,41 @@ describe("config hardening", () => {
         FICTA_REGISTRY_DOPPLER_CONFIGS: "dev,prod",
         FICTA_REGISTRY_MIN_LEN: "12",
         FICTA_REQUIRE_REGISTRY: "1",
-        FICTA_LOG_BODIES: "0",
         FICTA_LOG_MAX_BYTES: "12345",
         FICTA_ALLOW_CUSTOM_UPSTREAM: "1",
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips the per-surface PII toggles as [pii] booleans", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ficta-config-"));
+    const path = join(dir, "config.toml");
+    try {
+      writeUserConfig({ FICTA_PII_ENABLED: "1", FICTA_PII_AGENTS: "1" }, path);
+
+      const toml = readFileSync(path, "utf8");
+      expect(toml).toContain("[pii]");
+      expect(toml).toContain("enabled = true");
+      expect(toml).toContain("agents = true");
+      expect(readUserConfig(path)).toMatchObject({ FICTA_PII_ENABLED: "1", FICTA_PII_AGENTS: "1" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips registry.exclude_names as a comma list, and a single name as a string", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ficta-config-"));
+    const path = join(dir, "config.toml");
+    try {
+      writeUserConfig({ FICTA_REGISTRY_EXCLUDE_NAMES: "FOO,BAR_1" }, path);
+      expect(readFileSync(path, "utf8")).toContain('exclude_names = ["FOO", "BAR_1"]');
+      expect(readUserConfig(path)).toMatchObject({ FICTA_REGISTRY_EXCLUDE_NAMES: "FOO,BAR_1" });
+
+      // A single name serializes as a TOML string but parses back to the same env value.
+      writeUserConfig({ FICTA_REGISTRY_EXCLUDE_NAMES: "SOLO" }, path);
+      expect(readUserConfig(path)).toMatchObject({ FICTA_REGISTRY_EXCLUDE_NAMES: "SOLO" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -40,7 +40,7 @@ Optional overrides:
 
 ## What each run asserts
 
-Against ficta's own egress capture (`FICTA_LOG_BODIES=1` → `run-*/req-*.sent.json`,
+Against ficta's own egress capture (`FICTA_LOG_LEVEL=trace` → `run-*/req-*.sent.json`,
 the exact bytes forwarded upstream):
 
 1. **Pre-redaction body contains the canary** — proves the agent actually pulled it

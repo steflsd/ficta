@@ -1,7 +1,30 @@
-import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import { createRootRoute, HeadContent, Outlet, redirect, Scripts } from "@tanstack/react-router";
+import { fetchAuthState } from "@/lib/auth/auth";
+import { fetchInstanceSettings } from "@/lib/storage/settings";
 import styles from "@/styles.css?url";
 
 export const Route = createRootRoute({
+  // Resolve auth once at the top of the tree: gate the whole app when the provider requires it, and
+  // seed router context so any component can read the current user (see useAuthState). In `none` mode
+  // this returns an open state and never redirects. `/api/auth/*` are server routes and don't run this,
+  // so the redirect target can't loop.
+  beforeLoad: async ({ location }) => {
+    // Resolve auth first and gate before doing anything else — an unauthenticated user shouldn't trigger
+    // instance-settings work. Both land in router context so components read them without refetching.
+    const auth = await fetchAuthState();
+    if (auth.requiresAuth && !auth.user) {
+      const returnPathname = encodeURIComponent(location.pathname + location.searchStr);
+      throw redirect({ href: `/api/auth/sign-in?returnPathname=${returnPathname}` });
+    }
+    if (auth.user && !auth.user.organizationId && location.pathname !== "/onboarding") {
+      throw redirect({ to: "/onboarding" });
+    }
+    if (auth.user?.organizationId && location.pathname === "/onboarding") {
+      throw redirect({ to: "/" });
+    }
+    const instance = await fetchInstanceSettings();
+    return { auth, instance };
+  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },

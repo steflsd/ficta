@@ -12,15 +12,15 @@ type TomlTable = { [key: string]: TomlValue | TomlTable };
 
 const CORE_CONFIG_BINDINGS: readonly ConfigBinding[] = [
   { env: "FICTA_REGISTRY_MIN_LEN", path: ["registry", "min_len"], kind: "number" },
+  { env: "FICTA_REGISTRY_EXCLUDE_NAMES", path: ["registry", "exclude_names"], kind: "string-array-comma" },
   { env: "FICTA_REQUIRE_REGISTRY", path: ["registry", "require"], kind: "boolean" },
   { env: "FICTA_FAIL_CLOSED", path: ["redaction", "fail_closed"], kind: "boolean" },
+  { env: "FICTA_FAIL_CLOSED_DETECTION", path: ["detection", "fail_closed"], kind: "boolean" },
   { env: "FICTA_REDACT_PATHS", path: ["redaction", "redact_paths"], kind: "boolean" },
-  { env: "FICTA_LOG_BODIES", path: ["logging", "log_bodies"], kind: "boolean" },
   { env: "FICTA_LOG_MAX_BYTES", path: ["logging", "max_bytes"], kind: "number" },
   { env: "FICTA_LOG_DIR", path: ["logging", "log_dir"], kind: "string" },
   { env: "FICTA_SURROGATE_KEY", path: ["surrogate", "key"], kind: "string" },
   { env: "FICTA_PORT", path: ["runtime", "port"], kind: "number" },
-  { env: "FICTA_QUIET", path: ["runtime", "quiet"], kind: "boolean" },
   { env: "FICTA_ANTHROPIC_UPSTREAM", path: ["upstreams", "anthropic"], kind: "string" },
   { env: "FICTA_OPENAI_UPSTREAM", path: ["upstreams", "openai"], kind: "string" },
   { env: "FICTA_CHATGPT_UPSTREAM", path: ["upstreams", "chatgpt"], kind: "string" },
@@ -29,11 +29,12 @@ const CORE_CONFIG_BINDINGS: readonly ConfigBinding[] = [
 ];
 
 const CORE_SECTION_ORDER: readonly ConfigSection[] = [
-  { path: ["registry"], keys: ["min_len", "require"] },
+  { path: ["registry"], keys: ["min_len", "exclude_names", "require"] },
   { path: ["redaction"], keys: ["fail_closed", "redact_paths"] },
-  { path: ["logging"], keys: ["log_bodies", "max_bytes", "log_dir"] },
+  { path: ["detection"], keys: ["fail_closed"] },
+  { path: ["logging"], keys: ["max_bytes", "log_dir"] },
   { path: ["surrogate"], keys: ["key"] },
-  { path: ["runtime"], keys: ["port", "quiet"] },
+  { path: ["runtime"], keys: ["port"] },
   { path: ["upstreams"], keys: ["anthropic", "openai", "chatgpt", "forced", "allow_custom"] },
 ];
 

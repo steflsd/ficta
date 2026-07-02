@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultLogDir } from "./defaults.js";
 import { envFlag } from "./env-flags.js";
+import { type LogLevel, levelEnabled, parseLogLevel } from "./log-level.js";
 import { loadUserConfig } from "./user-config.js";
 
 loadUserConfig();
@@ -23,14 +24,14 @@ export interface Config {
   forcedUpstream?: string;
   allowCustomUpstream: boolean;
   logDir: string;
+  logLevel: LogLevel;
   logBodies: boolean;
   logMaxBytes: number;
-  quiet: boolean;
   failClosed: boolean;
-  silent: boolean;
 }
 
 export function loadConfig(): Config {
+  const logLevel = parseLogLevel(process.env.FICTA_LOG_LEVEL);
   return {
     // Bind loopback by default. Overriding to a non-loopback host (0.0.0.0, a LAN IP) exposes the
     // proxy — and the provider auth headers it forwards — to the network, so it is opt-in only.
@@ -45,16 +46,16 @@ export function loadConfig(): Config {
     forcedUpstream: process.env.FICTA_UPSTREAM,
     allowCustomUpstream: envFlag(process.env.FICTA_ALLOW_CUSTOM_UPSTREAM),
     logDir: expandHome(process.env.FICTA_LOG_DIR ?? defaultLogDir()),
-    // Logs contain REAL request/response bodies — opt in with FICTA_LOG_BODIES=1.
-    logBodies: process.env.FICTA_LOG_BODIES === "1",
+    // Single verbosity knob. Standalone default is "info"; the wrapper sets "silent" so proxy
+    // output never garbles the agent TUI (cli.ts). "debug" adds unknown-wire (non-model) traffic.
+    logLevel,
+    // "trace" writes REAL request/response bodies to disk — that is why it is the top tier and
+    // env-only (never persisted to config.toml).
+    logBodies: levelEnabled(logLevel, "trace"),
     logMaxBytes: boundedInt(process.env.FICTA_LOG_MAX_BYTES, DEFAULT_LOG_MAX_BYTES, 1024, 16 * 1024 * 1024),
-    // FICTA_QUIET=1 → console shows only model turns, not plugin/mcp/telemetry noise.
-    quiet: process.env.FICTA_QUIET === "1",
     // Privacy boundary: refuse to forward if a registered value survived redaction. Default ON.
     // FICTA_FAIL_CLOSED=0 to fall back to forwarding (lab/debug only).
     failClosed: process.env.FICTA_FAIL_CLOSED !== "0",
-    // FICTA_SILENT=1 → no proxy console output (the wrapper sets this so it never garbles the agent TUI).
-    silent: process.env.FICTA_SILENT === "1",
   };
 }
 

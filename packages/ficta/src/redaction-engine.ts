@@ -128,3 +128,20 @@ export interface TextRedactionDetails extends TextRedactionResult {
   hits: ProtectionHit[];
   leakHits: ProtectionHit[];
 }
+
+/**
+ * Neutral signal from a detector that its backend could not run (e.g. an out-of-process recognizer
+ * is unreachable). It carries no policy — the *core* decides whether an outage is fatal, resolving the
+ * per-plugin `failClosed()` override against the global default and either re-raising this to block the
+ * request or swallowing it to continue best-effort. `reason` is safe metadata (failure category) —
+ * never request text or protected values.
+ */
+export class DetectorUnavailableError extends Error {
+  constructor(
+    readonly plugin: string,
+    readonly reason?: string,
+  ) {
+    super(reason ? `detector "${plugin}" unavailable: ${reason}` : `detector "${plugin}" unavailable`);
+    this.name = "DetectorUnavailableError";
+  }
+}

