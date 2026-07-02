@@ -6,6 +6,13 @@ export type Provider = "openai" | "anthropic";
 export interface ModelChoice {
   provider: Provider;
   model: string;
+  /**
+   * ficta scope key for this conversation (server-derived `org:thread`). Sent as the internal
+   * `x-ficta-scope` header so the proxy pins a persistent per-thread detected-PII vault: a value
+   * detected on turn 1 stays redacted on every later turn even if detection misses it there. The
+   * proxy strips the header before forwarding upstream. Omit for one-off requests.
+   */
+  fictaScope?: string;
 }
 
 /**
@@ -15,19 +22,22 @@ export interface ModelChoice {
  */
 const FICTA_PROXY_URL = process.env.FICTA_PROXY_URL ?? "http://127.0.0.1:8787";
 
-export function createModelAdapter({ provider, model }: ModelChoice) {
+export function createModelAdapter({ provider, model, fictaScope }: ModelChoice) {
+  const defaultHeaders = fictaScope ? { "x-ficta-scope": fictaScope } : undefined;
   if (provider === "anthropic") {
     // ficta routes `/v1/messages` → the Anthropic upstream; the Anthropic adapter emits that wire.
     // The adapter's model param is a known-Claude-id union; the UI supplies a validated id, so cast.
     return anthropicText(model as Parameters<typeof anthropicText>[0], {
       baseURL: FICTA_PROXY_URL,
       apiKey: requireKey("ANTHROPIC_API_KEY"),
+      defaultHeaders,
     });
   }
   // ficta routes `/v1/chat/completions` → the OpenAI upstream; the OpenAI-compatible adapter emits it.
   return openaiCompatibleText(model, {
     baseURL: `${FICTA_PROXY_URL}/v1`,
     apiKey: requireKey("OPENAI_API_KEY"),
+    defaultHeaders,
   });
 }
 

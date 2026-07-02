@@ -181,7 +181,7 @@ export abstract class VaultView {
       if (!out.includes(v)) continue;
       const surrogate = this.surrogateFor(v);
       if (surrogate === undefined) continue;
-      const replaced = replaceKnownOutsidePaths(out, v, surrogate);
+      const replaced = replaceKnownOutsidePaths(out, v, surrogate, surrogateSpans(out, this.surrogate.pattern));
       if (replaced.count === 0) continue;
       found.add(v);
       out = replaced.text;
@@ -251,14 +251,19 @@ export abstract class VaultView {
     } catch {
       // Non-JSON: the whole raw body is scanned for any known value below.
     }
+    // A minted token is opaque HMAC output, so a value "found" inside one is not a leak — most
+    // notably a detected value like "FICTA" (the model narrating tokens) matches every token's
+    // prefix, including its own replacement, and would otherwise block every follow-up turn.
+    const stringSpans = strings.map((s) => surrogateSpans(s, this.surrogate.pattern));
+    const bodySpans = masked === undefined ? surrogateSpans(body, this.surrogate.pattern) : [];
     const leaked: string[] = [];
     for (const v of this.orderedValues()) {
-      const stringLeak = strings.some((s) => containsKnownOutsidePaths(s, v));
+      const stringLeak = strings.some((s, i) => containsKnownOutsidePaths(s, v, stringSpans[i]));
       // For valid JSON, string contents are masked out, so the backstop scans only primitives and
       // matches a value as a complete token — never as a substring of a longer number (so a
       // registered `12345678` is not flagged inside an unrelated `99912345678`).
       const primitiveLeak =
-        masked === undefined ? containsKnownOutsidePaths(body, v) : containsKnownPrimitive(masked, v);
+        masked === undefined ? containsKnownOutsidePaths(body, v, bodySpans) : containsKnownPrimitive(masked, v);
       if (stringLeak || primitiveLeak) leaked.push(v);
     }
     return leaked;
@@ -337,9 +342,18 @@ export class Vault extends VaultView {
    * sharing its {@link SurrogateStrategy}. Detected values register into the scope only and are
    * discarded when the scope is dropped, so they neither grow the permanent vault nor leak across
    * requests. Restore/leak/redact in the scope consult detected-then-permanent.
+   *
+   * Pass `detected` to stack an existing (persistent, e.g. per-thread) detected layer instead of a
+   * fresh one: the view itself stays per-request (its `restored` accounting is fresh) while the
+   * value↔surrogate dictionary is shared across the scope key's requests.
    */
-  beginScope(): ScopedVault {
-    return new ScopedVault(this.permanent);
+  beginScope(detected?: SurrogateTable): ScopedVault {
+    return new ScopedVault(this.permanent, detected);
+  }
+
+  /** A detached detected-PII layer sharing this vault's strategy, for persistent keyed scopes. */
+  newDetectedLayer(): SurrogateTable {
+    return new SurrogateTable(this.permanent.surrogate);
   }
 }
 
@@ -353,9 +367,8 @@ export class Vault extends VaultView {
 export class ScopedVault extends VaultView {
   private readonly detected: SurrogateTable;
 
-  constructor(permanent: SurrogateTable) {
-    const detected = new SurrogateTable(permanent.surrogate); // shares the strategy → same surrogates
-    super([detected, permanent]);
+  constructor(permanent: SurrogateTable, detected: SurrogateTable = new SurrogateTable(permanent.surrogate)) {
+    super([detected, permanent]); // detected shares the permanent strategy → same surrogates
     this.detected = detected;
   }
 
@@ -568,7 +581,39 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function replaceKnownOutsidePaths(text: string, needle: string, replacement: string): { text: string; count: number } {
+/**
+ * Spans of already-minted surrogate tokens in `text`. A value occurrence overlapping one must be
+ * left alone on both sides of the fail-closed gate: rewriting inside a token corrupts it (breaking
+ * restore of the token it belongs to), and matching inside one is a false leak — the token is
+ * opaque HMAC output whose characters say nothing about the value's presence. The canonical
+ * offender is a detected value that is itself a token substring (e.g. Presidio tagging the word
+ * "FICTA" in a transcript where the model discussed its own tokens): replacing it re-introduces
+ * the value inside its own surrogate, which un-guarded leak scanning then flags on every turn.
+ */
+function surrogateSpans(text: string, pattern: RegExp): ReadonlyArray<readonly [number, number]> {
+  const spans: Array<readonly [number, number]> = [];
+  const re = new RegExp(pattern.source, "g");
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) spans.push([m.index, m.index + m[0].length]);
+  return spans.length === 0 ? NO_SPANS : spans;
+}
+
+const NO_SPANS: ReadonlyArray<readonly [number, number]> = [];
+
+/** Whether [start, end) overlaps any of the (ordered) excluded spans. */
+function overlapsSpan(spans: ReadonlyArray<readonly [number, number]>, start: number, end: number): boolean {
+  for (const [s, e] of spans) {
+    if (s >= end) return false; // spans are in text order; nothing further can overlap
+    if (e > start) return true;
+  }
+  return false;
+}
+
+function replaceKnownOutsidePaths(
+  text: string,
+  needle: string,
+  replacement: string,
+  excludedSpans: ReadonlyArray<readonly [number, number]> = NO_SPANS,
+): { text: string; count: number } {
   if (!needle) return { text, count: 0 };
 
   let out = "";
@@ -580,7 +625,7 @@ function replaceKnownOutsidePaths(text: string, needle: string, replacement: str
     if (index === -1) break;
 
     const end = index + needle.length;
-    if (isInsidePathLikeToken(text, index, end, needle)) {
+    if (overlapsSpan(excludedSpans, index, end) || isInsidePathLikeToken(text, index, end, needle)) {
       out += text.slice(cursor, end);
     } else {
       out += text.slice(cursor, index) + replacement;
@@ -621,14 +666,18 @@ function jsonStringEscape(value: string): string {
   return json.slice(1, -1);
 }
 
-function containsKnownOutsidePaths(text: string, needle: string): boolean {
+function containsKnownOutsidePaths(
+  text: string,
+  needle: string,
+  excludedSpans: ReadonlyArray<readonly [number, number]> = NO_SPANS,
+): boolean {
   if (!needle) return false;
   let cursor = 0;
   for (;;) {
     const index = text.indexOf(needle, cursor);
     if (index === -1) return false;
     const end = index + needle.length;
-    if (!isInsidePathLikeToken(text, index, end, needle)) return true;
+    if (!overlapsSpan(excludedSpans, index, end) && !isInsidePathLikeToken(text, index, end, needle)) return true;
     cursor = end;
   }
 }
@@ -792,11 +841,17 @@ function collectStrings(value: unknown, out: string[]): void {
  */
 export function redactableBodyText(body: string): string {
   if (!body) return body;
+  return redactableBodyLeaves(body).join("\n");
+}
+
+/** The individual redactable string leaves (values + object keys) of a body; `[body]` for non-JSON. */
+export function redactableBodyLeaves(body: string): string[] {
+  if (!body) return [];
   try {
     const strings: string[] = [];
     collectStrings(JSON.parse(body), strings);
-    return strings.join("\n");
+    return strings;
   } catch {
-    return body; // non-JSON: the entire body is redactable text
+    return [body]; // non-JSON: the entire body is redactable text
   }
 }

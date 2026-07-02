@@ -32,11 +32,13 @@ export const Route = createFileRoute("/api/chat")({
         let provider: Provider;
         let model: string;
         let messages: Parameters<typeof chat>[0]["messages"];
+        let threadId: string | undefined;
         try {
           const body = await request.json();
           provider = body.forwardedProps?.provider ?? "openai";
           model = body.forwardedProps?.model ?? "gpt-5-mini";
           messages = body.messages;
+          threadId = typeof body.threadId === "string" ? body.threadId.slice(0, 128) : undefined;
           if (!PROVIDERS.includes(provider)) throw new Error(`unknown provider "${provider}"`);
           if (!model) throw new Error("no model selected");
         } catch (err) {
@@ -52,8 +54,13 @@ export const Route = createFileRoute("/api/chat")({
 
         let stream: ReturnType<typeof chat>;
         try {
+          // The ficta scope key pins a persistent per-thread detected-PII vault in the proxy, so a
+          // value detected on an earlier turn stays redacted when the restored transcript is resent.
+          // The org id comes from server-side auth (never the client), so one org's threads can
+          // never address another's vault; the client-chosen threadId only partitions within it.
+          const fictaScope = threadId ? `${scope?.orgId ?? "local"}:${threadId}` : undefined;
           // Adapter creation reads the server-side API key and throws MissingKeyError if unset.
-          stream = chat({ adapter: createModelAdapter({ provider, model }), messages });
+          stream = chat({ adapter: createModelAdapter({ provider, model, fictaScope }), messages });
         } catch (err) {
           if (err instanceof MissingKeyError) return errorResponse(503, err.message);
           return errorResponse(502, reason(err, "could not reach the model via ficta"));

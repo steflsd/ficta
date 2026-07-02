@@ -1,4 +1,4 @@
-![ficta — a local secret airlock for coding agents](packages/ficta/assets/ficta-overview.png)
+![ficta — a local secret airlock for coding agents](assets/ficta-overview.png)
 
 # ficta
 
@@ -50,6 +50,8 @@ Full install and usage docs live in the package README:
 **[`packages/ficta/README.md`](packages/ficta/README.md)**.
 
 ## Web UI / PII gateway
+
+![ficta — a local PII airlock for company LLM use](assets/piiairlock.png)
 
 The workspace also includes **[`apps/web`](apps/web)**, a private TanStack Start chat UI for internal
 PII-aware model access. The browser talks to the app's `/api/chat` route; the server route builds an

@@ -42,11 +42,12 @@ export interface RedactionEngine {
 
   /**
    * Open a request-scoped view of the engine. Registered secrets (the permanent layer) are shared
-   * and unchanged; values detected while redacting this request live in an ephemeral layer that is
-   * consulted only for *this* request's restore and is discarded when the returned scope is dropped.
-   * That bounds detected-PII memory and keeps one request's detected values from being restored into
-   * another's response. `scopeKey` is the seam for a future persistent/shared vault (session/org):
-   * ignored today (always an in-memory ephemeral scope). The engine's own `redactBodyDetailed` /
+   * and unchanged; values detected while redacting this request live in a detected layer that is
+   * consulted only within the scope. Without a `scopeKey` that layer is ephemeral — discarded when
+   * the returned scope is dropped, so one request's detected values are never restored into
+   * another's response. With a `scopeKey` (derived by a trusted caller, e.g. an org:thread pair)
+   * the detected layer persists across the key's requests under TTL/LRU bounds, and the same
+   * isolation guarantee holds *across keys*. The engine's own `redactBodyDetailed` /
    * `restoreText` / … operate on a single implicit default scope — the degenerate CLI case.
    */
   beginRequest(scopeKey?: string): RequestScope;

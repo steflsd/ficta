@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { detectorFailClosed } from "./detection-policy.js";
 import {
   type DetectTextContext,
@@ -18,13 +19,30 @@ import {
   type TextRedactionContext,
   type TextRedactionDetails,
 } from "./redaction-engine.js";
-import { redactableBodyText, type ScopedVault, Vault } from "./vault.js";
+import { redactableBodyLeaves, type ScopedVault, type SurrogateTable, Vault } from "./vault.js";
 import type { Wire } from "./wire.js";
 import { sseRestoreAdapterFor } from "./wire-restore.js";
 
 export interface ProtectionEngineOptions {
   plugins?: readonly FictaPlugin[];
   values?: readonly ProtectedValue[];
+}
+
+/** How long a keyed scope's detected PII may sit idle in memory before it is dropped. */
+const KEYED_SCOPE_IDLE_TTL_MS = 30 * 60_000;
+/** Upper bound on concurrently-retained keyed scopes (least-recently-used evicted first). */
+const KEYED_SCOPE_MAX = 256;
+
+/**
+ * Persistent state for one scope key: the detected value↔surrogate layer shared by the key's
+ * requests, that layer's value metadata, and hashes of body string-leaves every available detector
+ * has already swept (so re-sent transcript prefixes are not re-detected each turn).
+ */
+interface KeyedScopeState {
+  detected: SurrogateTable;
+  metadata: Map<string, ProtectedValue[]>;
+  seenLeaves: Set<string>;
+  lastUsedAt: number;
 }
 
 /**
@@ -45,6 +63,8 @@ export class ProtectionEngine implements RedactionEngine {
   private readonly policy: RegistryPolicy;
   /** Metadata for permanent (registered) values only; detected-value metadata lives on each scope. */
   private readonly metadataByValue = new Map<string, ProtectedValue[]>();
+  /** Persistent per-key scope state (detected layer + metadata + swept-content hashes), LRU-ordered. */
+  private readonly keyedScopes = new Map<string, KeyedScopeState>();
   private defaultRequestScope?: ProtectionRequestScope;
 
   /** Safe launch-time snapshot of registry-source discovery. */
@@ -96,12 +116,57 @@ export class ProtectionEngine implements RedactionEngine {
   }
 
   /**
-   * Open a request-scoped view. `scopeKey` is reserved for a future persistent/shared vault
-   * (session/org) and is ignored today — every scope is an in-memory ephemeral layer over the shared
-   * permanent vault, discarded when the caller drops it.
+   * Open a request-scoped view. Without a `scopeKey` the scope is an in-memory ephemeral layer over
+   * the shared permanent vault, discarded when the caller drops it (the CLI/agent default).
+   *
+   * With a `scopeKey` (e.g. the web app's server-derived `org:thread` pair) the scope's detected
+   * layer persists across that key's requests: a value detected on turn 1 stays redacted on turn 3
+   * even if the detector misses it there, and detection can skip content it already swept (see
+   * {@link ProtectionRequestScope.redactBodyDetailed}). Keys must be derived by a trusted caller —
+   * the engine treats the key itself as the isolation boundary, exactly like the per-request case:
+   * different keys can never restore each other's values. Keyed state holds raw detected PII in
+   * memory beyond a single request, so it is bounded by an idle TTL and an LRU cap; eviction only
+   * costs re-detection (deterministic surrogates re-mint identically), never a broken restore of a
+   * future request.
    */
-  beginRequest(_scopeKey?: string): RequestScope {
-    return new ProtectionRequestScope(this.plugins, this.policy, this.metadataByValue, this.vault.beginScope());
+  beginRequest(scopeKey?: string): RequestScope {
+    if (!scopeKey) {
+      return new ProtectionRequestScope(this.plugins, this.policy, this.metadataByValue, this.vault.beginScope());
+    }
+    const state = this.keyedScopeState(scopeKey);
+    return new ProtectionRequestScope(
+      this.plugins,
+      this.policy,
+      this.metadataByValue,
+      this.vault.beginScope(state.detected),
+      state.metadata,
+      state.seenLeaves,
+    );
+  }
+
+  private keyedScopeState(key: string): KeyedScopeState {
+    const now = Date.now();
+    const existing = this.keyedScopes.get(key);
+    if (existing) this.keyedScopes.delete(key); // re-insert below so map order stays least-recently-used-first
+    const state = existing ?? {
+      detected: this.vault.newDetectedLayer(),
+      metadata: new Map<string, ProtectedValue[]>(),
+      seenLeaves: new Set<string>(),
+      lastUsedAt: now,
+    };
+    state.lastUsedAt = now;
+    this.keyedScopes.set(key, state);
+    this.evictKeyedScopes(now);
+    return state;
+  }
+
+  /** Drop idle keyed scopes and enforce the LRU cap. Map order is LRU because touches re-insert. */
+  private evictKeyedScopes(now: number): void {
+    for (const [key, state] of this.keyedScopes) {
+      const expired = now - state.lastUsedAt > KEYED_SCOPE_IDLE_TTL_MS;
+      if (!expired && this.keyedScopes.size <= KEYED_SCOPE_MAX) break;
+      this.keyedScopes.delete(key);
+    }
   }
 
   // The engine's own redact/restore surface operates on a single implicit default scope — the
@@ -157,20 +222,33 @@ export class ProtectionEngine implements RedactionEngine {
  * PII is garbage-collected and can never be restored into a later request's response.
  */
 class ProtectionRequestScope implements RequestScope {
-  private readonly detectedMetadata = new Map<string, ProtectedValue[]>();
-
   constructor(
     private readonly plugins: readonly FictaPlugin[],
     private readonly policy: RegistryPolicy,
     private readonly permanentMetadata: ReadonlyMap<string, ProtectedValue[]>,
     private readonly vault: ScopedVault,
+    private readonly detectedMetadata: Map<string, ProtectedValue[]> = new Map(),
+    /** Present only for keyed scopes: leaf hashes already swept by every available detector. */
+    private readonly seenLeaves?: Set<string>,
   ) {}
 
   async redactBodyDetailed(body: string, ctx: Omit<DetectTextContext, "surface"> = {}): Promise<BodyRedactionDetails> {
     // Detect over the redactable text surface (JSON string leaves), not the raw body, so a value is
     // detected iff redaction can rewrite it — number-only leaves are neither, avoiding a fail-closed
-    // reject on PII we could not have removed anyway. See redactableBodyText.
-    await this.registerDetectedValues(redactableBodyText(body), { ...ctx, surface: "body" });
+    // reject on PII we could not have removed anyway. See redactableBodyLeaves.
+    //
+    // Keyed scopes detect incrementally: a leaf every available detector has already swept in this
+    // scope is skipped, so turn N of a resent transcript only pays detection for its new content —
+    // and old content cannot be reinterpreted into new detections later. Redaction and the leak
+    // gate still run over the FULL body with all of the scope's known values, so skipping detection
+    // never skips protection. Leaves are marked swept only when no detector was unavailable, so a
+    // recovering detector gets a full pass at anything it missed.
+    const leaves = redactableBodyLeaves(body);
+    const seen = this.seenLeaves;
+    const hashes = seen ? leaves.map(leafHash) : [];
+    const fresh = seen ? leaves.filter((_, i) => !seen.has(hashes[i] ?? "")) : leaves;
+    const complete = await this.registerDetectedValues(fresh.join("\n"), { ...ctx, surface: "body" });
+    if (seen && complete) for (const hash of hashes) seen.add(hash);
     const redacted = this.vault.redactBodyDetailed(body);
     const leakValues = this.vault.leakValues(redacted.body);
     return {
@@ -224,9 +302,10 @@ class ProtectionRequestScope implements RequestScope {
     return false;
   }
 
-  private async registerDetectedValues(text: string, ctx: DetectTextContext): Promise<number> {
-    if (!text) return 0;
-    let added = 0;
+  /** Returns true when every detector ran (nothing was skipped by a fail-open outage or crash). */
+  private async registerDetectedValues(text: string, ctx: DetectTextContext): Promise<boolean> {
+    if (!text) return true;
+    let complete = true;
     for (const plugin of this.plugins) {
       let detected: readonly ProtectedValue[];
       try {
@@ -239,17 +318,19 @@ class ProtectionRequestScope implements RequestScope {
         if (err instanceof DetectorUnavailableError) {
           const override = plugin.kind === "detector" ? plugin.failClosed?.() : undefined;
           if (detectorFailClosed(override)) throw err;
+          complete = false;
           continue;
         }
+        complete = false;
         continue;
       }
       if (detected.length === 0) continue;
       const candidates = detected.map((value) => ({ ...value, plugin: value.plugin ?? plugin.name }));
       const admitted = admit(candidates, this.policy);
       for (const value of admitted) remember(this.detectedMetadata, value);
-      added += this.vault.register(admitted);
+      this.vault.register(admitted);
     }
-    return added;
+    return complete;
   }
 
   /** Metadata for a raw value: this request's detected values take precedence over the permanent registry. */
@@ -287,6 +368,11 @@ class ProtectionRequestScope implements RequestScope {
     if (!text) return fallback;
     return this.containsProtectedValue(text) ? fallback : text;
   }
+}
+
+/** Content hash for the swept-leaf ledger; hashes are retained, never the leaf text itself. */
+function leafHash(leaf: string): string {
+  return createHash("sha256").update(leaf).digest("hex");
 }
 
 /** Drop named candidates excluded by an enforced (trusted) registry-policy rule. */

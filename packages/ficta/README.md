@@ -1,4 +1,4 @@
-![ficta — a local secret airlock for coding agents](assets/ficta-overview.png)
+![ficta — a local secret airlock for coding agents](https://raw.githubusercontent.com/steflsd/ficta/main/assets/ficta-overview.png)
 
 # @steflsd/ficta
 

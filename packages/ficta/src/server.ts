@@ -65,11 +65,11 @@ export async function startProxy(
     const method = c.req.method;
     const wire = wireOf(url.pathname);
 
-    // One ephemeral scope for this request: registered secrets (the permanent layer) are shared, but
-    // any PII detected while redacting this request lives only in this scope and is consulted only
-    // for this request's restore. The scope is dropped when the handler returns, so detected values
-    // are bounded and can never be restored into another request's response. `scopeKeyFrom` is the
-    // seam for a future session/org-keyed persistent vault; it returns undefined today.
+    // One scope per request: registered secrets (the permanent layer) are shared, while detected
+    // PII is consulted only within the request's scope. Without a scope key the scope is dropped
+    // when the handler returns, so detected values are bounded and can never be restored into
+    // another request's response. A trusted caller may pin a persistent per-thread detected vault
+    // via the internal scope header (see scopeKeyFrom); isolation then holds across keys instead.
     const scope = engine.beginRequest(scopeKeyFrom(c));
 
     let searchToSend = url.search;
@@ -86,7 +86,7 @@ export async function startProxy(
           redaction,
           blocked: true,
         });
-        return blockedLeakResponse(c, "query string", redaction.leaks);
+        return blockedLeakResponse(c, "query string", redaction.leaks, undefined, redaction.leakHits);
       }
       if (redaction.count > 0) searchToSend = redactedSearch;
     }
@@ -112,6 +112,7 @@ export async function startProxy(
     headers.delete("host");
     headers.delete("content-length");
     headers.delete("accept-encoding");
+    headers.delete(SCOPE_HEADER); // internal routing metadata — must never reach the upstream vendor
 
     let bodyToSend: string | undefined;
     let n: number;
@@ -159,7 +160,7 @@ export async function startProxy(
             redaction,
             blocked: true,
           });
-          return blockedLeakResponse(c, "body", redaction.leaks, n);
+          return blockedLeakResponse(c, "body", redaction.leaks, n, redaction.leakHits);
         }
         if (redaction.count > 0 || redaction.leaks > 0) {
           recordProtection(stats, scope, {
@@ -217,7 +218,7 @@ export async function startProxy(
           redaction,
           blocked: true,
         });
-        return blockedLeakResponse(c, "headers", redaction.leaks, n);
+        return blockedLeakResponse(c, "headers", redaction.leaks, n, redaction.leakHits);
       }
       if (redaction.count > 0 || redaction.leaks > 0) {
         recordProtection(stats, scope, {
@@ -375,14 +376,22 @@ export async function startProxy(
 }
 
 /**
- * The scope-key seam. Today every request gets an isolated in-memory ephemeral scope, so this
- * returns `undefined` (no shared/persistent vault). It is the single place a future session- or
- * org-derived key (from auth, a header, or a cookie) would be extracted to select a persistent,
- * shared vault — without touching the request path. Intentionally ignores `c` for now.
+ * The scope-key seam: an internal header set by a trusted caller (e.g. the web app's server route,
+ * which derives it from its own auth as `org:thread`) selects a persistent per-key detected-PII
+ * vault, so a value detected on one turn stays redacted on every later turn of the same thread.
+ * The key is the isolation boundary — the engine never restores one key's values into another's
+ * responses — so callers must derive it from trusted identity, never from client-controlled input
+ * alone. Absent the header, every request keeps its own isolated ephemeral scope. The header is
+ * stripped before the request is forwarded upstream.
  */
-function scopeKeyFrom(_c: Context): string | undefined {
-  return undefined;
+function scopeKeyFrom(c: Context): string | undefined {
+  const key = c.req.header(SCOPE_HEADER)?.trim();
+  if (!key) return undefined;
+  return key.length > MAX_SCOPE_KEY_LENGTH ? key.slice(0, MAX_SCOPE_KEY_LENGTH) : key;
 }
+
+const SCOPE_HEADER = "x-ficta-scope";
+const MAX_SCOPE_KEY_LENGTH = 256;
 
 /** Safe runtime status for first-party UIs. Contains only counts/config/health metadata — never values. */
 async function protectionStatus(engine: RedactionEngine) {
@@ -571,9 +580,17 @@ function decodeQueryComponent(value: string): string {
 }
 
 /** Single fail-closed 403 builder so the query/body/header surfaces stay in lockstep. */
-function blockedLeakResponse(c: Context, surface: string, leaks: number, n?: number): Response {
+function blockedLeakResponse(
+  c: Context,
+  surface: string,
+  leaks: number,
+  n?: number,
+  leakHits: ProtectionHit[] = [],
+): Response {
+  // leakHits is category metadata (e.g. name "location", source "pii-presidio"), sanitized by the
+  // engine to never carry a raw value — without it a block is undiagnosable from the log line.
   log.error(
-    { reqId: n, leaks, surface },
+    { reqId: n, leaks, surface, leakHits },
     `🛑 BLOCKED — ${leaks} registered value(s) survived ${surface} redaction; refusing to forward`,
   );
   return c.json(
